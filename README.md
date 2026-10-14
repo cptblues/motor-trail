@@ -31,13 +31,16 @@ La première compilation de Bevy peut être longue. Le prototype ouvre une fenê
 
 - Terrain procédural d'environ 120 × 165 m avec pente et chemin de terre.
 - Arbres, rochers et cabane stylisés avec collisions Rapier.
-- Châssis dynamique Rapier et 4 suspensions raycast appliquant des forces aux points de contact.
-- Motricité, friction latérale et gamme courte simplifiées.
+- Châssis dynamique Rapier et 4 suspensions raycast à débattement court (36 cm).
+- Roues visuelles animées et calées sur les points de contact au sol.
+- Direction corrigée pour correspondre à la caméra arrière (D = droite à l'écran).
+- Motricité, friction latérale, freinage et gamme courte simplifiées.
+- Caméra stabilisée sur l'horizon, indicateur du nombre de roues au sol.
 - Caméra suiveuse, HUD de vitesse, arrivée au refuge.
 
 ## Limites connues
 
-Il s'agit d'un **prototype semi-arcade**, pas d'une simulation complète de pneus. Les roues ne sont pas des rigid bodies indépendants et n'animent pas encore leur débattement. Pas de treuil, de boue déformable, de cargaisons ni de missions multiples. Le comportement de conduite reste à régler avec des tests de jeu.
+Il s'agit d'un **prototype semi-arcade**, pas d'une simulation complète de pneus. Les roues ne sont pas des rigid bodies indépendants : le contact reste simulé par raycasts. Leur position visuelle suit toutefois la compression des suspensions. Pas de treuil, de boue déformable, de cargaisons ni de missions multiples. Le comportement de conduite reste à régler avec des tests de jeu.
 
 ## Vérification
 
@@ -50,7 +53,17 @@ Le dépôt inclut un workflow GitHub Actions pour vérifier le build et les test
 
 ## Prochaines étapes
 
-1. Ajuster la physique, la garde au sol, la suspension et l'adhérence.
-2. Animer les roues avec le débattement raycast.
-3. Ajouter un treuil entre véhicule et arbres.
-4. Ajouter les premières missions de livraison.
+1. **Essayer la conduite sur PC** : vérifier que D tourne à droite de l'écran et que les pneus touchent visuellement le sol à l'arrêt.
+2. Tester montée, descente, marche arrière, virages à différentes vitesses et franchissement du rocher.
+3. Ajuster grip, raideur des ressorts et amortissement d'après le ressenti.
+4. Ensuite seulement : ajouter un treuil et des missions de livraison.
+
+### Vérification rapide après un pull
+
+- Lancer `cargo run --release` puis attendre l'immobilisation du véhicule.
+- L'affichage `Roues au sol: 4/4` doit apparaître sur une surface suffisamment plane.
+- Avancer puis appuyer sur **D** : le véhicule doit tourner à droite dans l'image ; **Q/A** le fait tourner à gauche.
+- Traverser une bosse : chaque roue doit suivre les variations du terrain, sans rebond excessif.
+- Tester **L** pour la gamme courte ; utiliser **R** si le véhicule se retourne.
+
+Le build et les tests automatiques ne remplacent **pas** ces essais graphiques et physiques en jeu.
