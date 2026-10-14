@@ -23,6 +23,9 @@ La première compilation de Bevy peut être longue. Le prototype ouvre une fenê
 | Espace | Frein |
 | L | Basculer entre gamme normale et courte |
 | R | Réinitialiser la position du véhicule |
+| Clic droit maintenu + mouvement de souris | Faire tourner la caméra à 360° autour du véhicule |
+| Molette de souris / défilement du pavé tactile | Zoomer et dézoomer |
+| C | Recentrer la caméra derrière le véhicule |
 | Échap | Quitter |
 
 **Objectif** : atteindre le refuge en haut de la piste, ou explorer librement la forêt.
@@ -35,8 +38,9 @@ La première compilation de Bevy peut être longue. Le prototype ouvre une fenê
 - Roues visuelles animées et calées sur les points de contact au sol.
 - Direction corrigée pour correspondre à la caméra arrière (D = droite à l'écran).
 - Motricité, friction latérale, freinage et gamme courte simplifiées.
-- Caméra stabilisée sur l'horizon, indicateur du nombre de roues au sol.
-- Caméra suiveuse, HUD de vitesse, arrivée au refuge.
+- Caméra orbitale à 360° : clic droit + souris pour inspecter le véhicule en roulant ou à l'arrêt.
+- Zoom à la molette, vue arrière rétablie avec **C**, limites verticales et évitement simple des obstacles.
+- Caméra stabilisée sur l'horizon, indicateur du nombre de roues au sol, HUD de vitesse et arrivée au refuge.
 
 ## Limites connues
 
@@ -64,6 +68,9 @@ Le dépôt inclut un workflow GitHub Actions pour vérifier le build et les test
 - L'affichage `Roues au sol: 4/4` doit apparaître sur une surface suffisamment plane.
 - Avancer puis appuyer sur **D** : le véhicule doit tourner à droite dans l'image ; **Q/A** le fait tourner à gauche.
 - Traverser une bosse : chaque roue doit suivre les variations du terrain, sans rebond excessif.
+- Maintenir **clic droit** et déplacer la souris pour observer le véhicule de côté, de face et depuis le dessus ; la conduite reste active.
+- Tester la **molette** pour le zoom, puis **C** pour revenir derrière le 4x4.
+- Vérifier que la caméra ne traverse pas les arbres, les rochers ni les pentes ; l'évitement reste simple et pourra nécessiter des ajustements.
 - Tester **L** pour la gamme courte ; utiliser **R** si le véhicule se retourne.
 
 Le build et les tests automatiques ne remplacent **pas** ces essais graphiques et physiques en jeu.
