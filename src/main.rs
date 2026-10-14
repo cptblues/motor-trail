@@ -140,7 +140,7 @@ fn setup(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
-        DirectionalLight { illuminance: 13_000.0, shadows_enabled: true, ..default() },
+        DirectionalLight { illuminance: 13_000.0, shadow_maps_enabled: true, ..default() },
         Transform::from_xyz(-30.0, 55.0, -35.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     let (mesh, collider) = ground();
