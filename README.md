@@ -163,6 +163,9 @@ git diff --check
 
 Les tests couvrent validation, profils, raccourci, rendu egui multipasse,
 pentes, terrain reel, marche arriere, freinage et commandes a l'arret.
+Le profil de test utilise des symboles de diagnostic limites pour contenir le
+cout d'edition des liens sous Windows. Les assertions debug et controles de
+depassement restent actifs ; le profil release du jeu est inchange.
 Pour les essais manuels, comparer les memes passages avec deux profils :
 arret en devers, demarrage en pente, freinage, virage et une roue sur un obstacle.
 Regler d'abord la charge statique et l'amortissement, puis adherence et moteur.
