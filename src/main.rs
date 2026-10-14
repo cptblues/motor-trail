@@ -1,6 +1,6 @@
 //! Motor Trail — prototype de 4x4 Low Poly avec Bevy et Rapier.
 //! Carte, vehicule, arbres, rochers et refuge proceduraux ; aucun asset externe.
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::f32::consts::TAU;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
@@ -264,10 +264,11 @@ fn spawn_gear_widget(commands: &mut Commands) {
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(19.0), top: Val::Px(116.0),
-                width: Val::Px(27.0), height: Val::Px(27.0), ..default()
+                width: Val::Px(27.0), height: Val::Px(27.0),
+                border_radius: BorderRadius::all(Val::Px(14.0)), ..default()
             },
             BackgroundColor(Color::srgb(0.95, 0.64, 0.19)),
-            BorderRadius::all(Val::Px(14.0)),
+ 
         ));
         panel.spawn((
             GearLabel { low: true },
@@ -439,7 +440,7 @@ fn truck(commands: &mut Commands, asset_server: &AssetServer) {
     // aux colliders ou aux points d'attache des roues.
     commands.entity(car).with_children(|p| {
         p.spawn((
-            SceneRoot(asset_server.load("vehicles/motor_trail_4x4.glb#Scene0")),
+            WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset("vehicles/motor_trail_4x4.glb"))),
             Transform::from_xyz(0.0, -1.0, 0.0)
                 .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
         ));
