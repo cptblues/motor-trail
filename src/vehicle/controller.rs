@@ -84,6 +84,7 @@ pub fn mass_properties(config: &VehiclePhysicsConfig) -> MassProperties {
 pub fn chassis_bundle(config: &VehiclePhysicsConfig) -> impl Bundle {
     (
         Truck,
+        Visibility::default(),
         RigidBody::Dynamic,
         Collider::cuboid(1.10, 0.40, 1.92),
         ColliderMassProperties::MassProperties(mass_properties(config)),
@@ -541,6 +542,18 @@ fn apply_parking_assistance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chassis_propagates_visibility_to_the_gltf_children() {
+        let mut world = World::new();
+        let car = world
+            .spawn((
+                chassis_bundle(&VehiclePhysicsConfig::baseline()),
+                Transform::default(),
+            ))
+            .id();
+        assert!(world.entity(car).contains::<InheritedVisibility>());
+    }
 
     #[test]
     fn parking_compensation_matches_internal_gravity_integration() {
