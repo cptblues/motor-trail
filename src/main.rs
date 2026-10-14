@@ -32,7 +32,7 @@ struct Truck;
 #[derive(Component)]
 struct ChaseCamera;
 #[derive(Component)]
-struct WheelVisual { index: usize }
+struct WheelVisual { index: usize, spin: f32 }
 #[derive(Component)]
 struct Hud;
 
@@ -329,7 +329,7 @@ fn truck(
             MeshMaterial3d(metal), Transform::from_xyz(0.0, -0.26, 1.84)));
         for (index, position) in MOUNTS.iter().enumerate() {
             p.spawn((
-                WheelVisual { index },
+                WheelVisual { index, spin: 0.0 },
                 Mesh3d(tire.clone()),
                 MeshMaterial3d(rubber.clone()),
                 Transform::from_translation(*position - Vec3::Y * SUSPENSION)
@@ -461,7 +461,7 @@ fn animate_wheels(
     keys: Res<ButtonInput<KeyCode>>,
     context: ReadRapierContext,
     cars: Query<(Entity, &Transform, &Velocity), With<Truck>>,
-    mut wheels: Query<(&WheelVisual, &mut Transform), Without<Truck>>,
+    mut wheels: Query<(&mut WheelVisual, &mut Transform), Without<Truck>>,
 ) {
     let Ok(rapier) = context.single() else { return; };
     let Ok((car_entity, car, velocity)) = cars.single() else { return; };
@@ -470,7 +470,7 @@ fn animate_wheels(
     let wheel_speed = velocity.linear.dot(forward) / WHEEL_RADIUS;
     let steer = steering_input(&keys);
     let steer_angle = steer * 0.43 / (1.0 + velocity.linear.dot(forward).abs() * 0.065);
-    for (wheel, mut transform) in &mut wheels {
+    for (mut wheel, mut transform) in &mut wheels {
         let mount = MOUNTS[wheel.index];
         let origin = car.translation + car.rotation * mount;
         let travel = rapier.cast_ray_and_get_normal(
@@ -482,9 +482,10 @@ fn animate_wheels(
 
         transform.translation = mount - Vec3::Y * travel;
         let angle = if wheel.index < 2 { steer_angle } else { 0.0 };
+        wheel.spin = (wheel.spin + wheel_speed * time.delta_secs()).rem_euclid(TAU);
         transform.rotation = Quat::from_rotation_y(angle)
             * Quat::from_rotation_z(FRAC_PI_2)
-            * Quat::from_rotation_y(wheel_speed * time.elapsed_secs().rem_euclid(TAU));
+            * Quat::from_rotation_y(wheel.spin);
     }
 }
 
