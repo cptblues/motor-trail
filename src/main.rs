@@ -3,6 +3,7 @@
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::mesh::Indices;
 use bevy::prelude::*;
 use bevy::render::render_resource::PrimitiveTopology;
@@ -31,6 +32,33 @@ const MOUNTS: [Vec3; 4] = [
 struct Truck;
 #[derive(Component)]
 struct ChaseCamera;
+
+// Angle de caméra relatif à la direction du 4x4 : 0 = derrière le véhicule.
+// Les angles sont indépendants du roulis/tangage de la carrosserie.
+#[derive(Resource)]
+struct OrbitCamera {
+    yaw_offset: f32,
+    pitch: f32,
+    distance: f32,
+    focus: Vec3,
+}
+impl Default for OrbitCamera {
+    fn default() -> Self {
+        let x = road_x(START);
+        Self {
+            yaw_offset: 0.0,
+            pitch: 0.40,
+            distance: 10.0,
+            focus: Vec3::new(x, height(x, START) + 1.8, START),
+        }
+    }
+}
+
+const ORBIT_SENSITIVITY: f32 = 0.006;
+const PITCH_MIN: f32 = 0.12;
+const PITCH_MAX: f32 = 1.28;
+const CAMERA_MIN_DISTANCE: f32 = 3.3;
+const CAMERA_MAX_DISTANCE: f32 = 19.0;
 #[derive(Component)]
 struct WheelVisual { index: usize, spin: f32 }
 #[derive(Component)]
@@ -47,6 +75,7 @@ fn main() {
     App::new()
         .insert_resource(ClearColor(Color::srgb(0.69, 0.82, 0.94)))
         .init_resource::<GameState>()
+        .init_resource::<OrbitCamera>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Motor Trail | Rando 4x4".into(),
@@ -498,19 +527,79 @@ fn objective(mut state: ResMut<GameState>, cars: Query<&Transform, With<Truck>>)
     }
 }
 
+// Caméra orbitale : maintenir clic droit et glisser pour observer les roues,
+// la suspension et le véhicule sur le terrain, même en conduisant.
 fn camera_follow(
     time: Res<Time>,
-    cars: Query<&Transform, With<Truck>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    mouse_scroll: Res<AccumulatedMouseScroll>,
+    mut orbit: ResMut<OrbitCamera>,
+    cars: Query<(Entity, &Transform), With<Truck>>,
+    context: ReadRapierContext,
     mut cameras: Query<&mut Transform, (With<ChaseCamera>, Without<Truck>)>,
 ) {
-    let (Ok(car), Ok(mut camera)) = (cars.single(), cameras.single_mut()) else { return; };
-    // Caméra stable : elle suit le cap horizontal, sans hériter du roulis.
-    let forward = (car.rotation * Vec3::Z).with_y(0.0).normalize_or_zero();
-    let forward = if forward.length_squared() < 0.01 { Vec3::Z } else { forward };
-    let destination = car.translation - forward * 9.8 + Vec3::Y * 4.5;
-    let alpha = 1.0 - (-4.5 * time.delta_secs()).exp();
-    camera.translation = camera.translation.lerp(destination, alpha);
-    camera.look_at(car.translation + Vec3::Y * 0.9 + forward * 3.0, Vec3::Y);
+    let (Ok((car_entity, car)), Ok(mut camera)) = (cars.single(), cameras.single_mut())
+        else { return; };
+
+    // C recentre derrière le 4x4 et restaure la distance de conduite.
+    if keys.just_pressed(KeyCode::KeyC) {
+        orbit.yaw_offset = 0.0;
+        orbit.pitch = 0.40;
+        orbit.distance = 10.0;
+    }
+    if mouse_buttons.pressed(MouseButton::Right) {
+        orbit.yaw_offset = (orbit.yaw_offset - mouse_motion.delta.x * ORBIT_SENSITIVITY)
+            .rem_euclid(TAU);
+        orbit.pitch = (orbit.pitch - mouse_motion.delta.y * ORBIT_SENSITIVITY)
+            .clamp(PITCH_MIN, PITCH_MAX);
+    }
+    // Zoom proportionnel à la distance pour être précis près du véhicule.
+    // Sur trackpad, Bevy retourne des pixels ; sur molette classique, des lignes.
+    let scroll_lines = match mouse_scroll.unit {
+        MouseScrollUnit::Line => mouse_scroll.delta.y,
+        MouseScrollUnit::Pixel => mouse_scroll.delta.y * 0.025,
+    };
+    if scroll_lines.abs() > f32::EPSILON {
+        orbit.distance = (orbit.distance * (-scroll_lines * 0.12).exp())
+            .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
+    }
+
+    let dt = time.delta_secs();
+    let target = car.translation + Vec3::Y * 0.8;
+    let follow_alpha = 1.0 - (-7.0 * dt).exp();
+    orbit.focus = orbit.focus.lerp(target, follow_alpha);
+
+    // Le +Z local est l'avant : on suit son cap au sol, pas son roulis.
+    let forward = car.rotation * Vec3::Z;
+    let heading = forward.x.atan2(forward.z);
+    let (azimuth_sin, azimuth_cos) = (heading + orbit.yaw_offset).sin_cos();
+    let horizontal = orbit.distance * orbit.pitch.cos();
+    let desired = orbit.focus
+        + Vec3::new(-azimuth_sin * horizontal, orbit.distance * orbit.pitch.sin(),
+            -azimuth_cos * horizontal);
+
+    // On raccourcit le bras de caméra lorsque le relief ou un arbre se trouve
+    // entre le 4x4 et la caméra (sans bloquer l'orbite).
+    let ray = desired - orbit.focus;
+    let mut safe_position = desired;
+    if let Ok(rapier) = context.single() {
+        if let Some((_, hit)) = rapier.cast_ray(
+            orbit.focus, ray.normalize(), ray.length(), true,
+            QueryFilter::default().exclude_rigid_body(car_entity),
+        ) {
+            let length = (hit - 0.35).max(1.1);
+            safe_position = orbit.focus + ray.normalize() * length;
+        }
+    }
+
+    // Smoothing temporel : réactivité pendant l'orbite, suivi doux en conduite.
+    let camera_alpha = 1.0 - (-11.0 * dt).exp();
+    camera.translation = camera.translation.lerp(safe_position, camera_alpha);
+    if camera.translation.distance_squared(orbit.focus) > 0.01 {
+        camera.look_at(orbit.focus, Vec3::Y);
+    }
 }
 
 fn display_hud(
@@ -526,6 +615,7 @@ fn display_hud(
     text.0 = format!(
         "MOTOR TRAIL  |  {:.0} km/h  |  GAMME {range}  |  Roues au sol: {wheels_on_ground}/4\n{mission}\n\
         Z/W avancer  S reculer  Q/A gauche  D droite  Espace frein\n\
+        Clic droit + souris : tourner la camera  |  Molette : zoom  |  C : vue arriere\n\
         L gamme courte  R recommencer  Echap quitter",
         speed.linear.length() * 3.6
     );
@@ -558,6 +648,16 @@ mod tests {
     fn suspension_does_not_pull_vehicle_down() {
         assert_eq!(suspension_force(0.0, 1.0), 0.0);
         assert!(suspension_force(0.15, 0.0) > 0.0);
+    }
+    #[test]
+    fn camera_orbit_defaults_to_rear_view() {
+        let orbit = OrbitCamera::default();
+        assert_eq!(orbit.yaw_offset, 0.0);
+        assert!((PITCH_MIN..=PITCH_MAX).contains(&orbit.pitch));
+        assert!((CAMERA_MIN_DISTANCE..=CAMERA_MAX_DISTANCE).contains(&orbit.distance));
+        let (s, c) = orbit.yaw_offset.sin_cos();
+        let back = Vec3::new(-s, 0.0, -c);
+        assert!((back - Vec3::NEG_Z).length() < 0.001);
     }
     #[test]
     fn road_stays_inside_map() {
