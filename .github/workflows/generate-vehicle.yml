@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install mesh generation dependencies
-        run: python -m pip install numpy trimesh brotli
+        run: python -m pip install numpy==2.3.5 trimesh==4.11.1 brotli
       - name: Restore original modular 4x4 generator
         run: |
           mkdir -p assets/vehicles
