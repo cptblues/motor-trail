@@ -1,0 +1,10 @@
+[package]
+name = "motor-trail"
+version = "0.1.0"
+edition = "2024"
+description = "Prototype de randonnée 4x4 low-poly avec Bevy et Rapier"
+license = "MIT"
+
+[dependencies]
+bevy = "=0.19.0"
+bevy_rapier3d = "=0.35.0"
