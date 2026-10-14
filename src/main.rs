@@ -1,6 +1,6 @@
 //! Motor Trail — prototype de 4x4 Low Poly avec Bevy et Rapier.
 //! Carte, vehicule, arbres, rochers et refuge proceduraux ; aucun asset externe.
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, TAU};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
@@ -13,12 +13,18 @@ const DEPTH: f32 = 165.0;
 const START: f32 = -67.0;
 const FINISH: f32 = 65.0;
 const WHEEL_RADIUS: f32 = 0.46;
-const SUSPENSION: f32 = 0.92;
+// Débattement volontairement court : la version précédente portait le châssis
+// trop haut et les roues visuelles n'atteignaient jamais le sol.
+const SUSPENSION: f32 = 0.36;
+const SPRING_STIFFNESS: f32 = 15_000.0;
+const SPRING_DAMPING: f32 = 1_750.0;
+const MAX_SPRING_FORCE: f32 = 8_500.0;
+const CAR_MASS: f32 = 930.0;
 const MOUNTS: [Vec3; 4] = [
-    Vec3::new(-0.91, -0.29,  1.22),
-    Vec3::new( 0.91, -0.29,  1.22),
-    Vec3::new(-0.91, -0.29, -1.22),
-    Vec3::new( 0.91, -0.29, -1.22),
+    Vec3::new(-0.91, -0.22,  1.22),
+    Vec3::new( 0.91, -0.22,  1.22),
+    Vec3::new(-0.91, -0.22, -1.22),
+    Vec3::new( 0.91, -0.22, -1.22),
 ];
 
 #[derive(Component)]
@@ -26,12 +32,15 @@ struct Truck;
 #[derive(Component)]
 struct ChaseCamera;
 #[derive(Component)]
+struct WheelVisual { index: usize }
+#[derive(Component)]
 struct Hud;
 
 #[derive(Resource, Default)]
 struct GameState {
     low_range: bool,
     reached_refuge: bool,
+    grounded_wheels: usize,
 }
 
 fn main() {
@@ -50,7 +59,7 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (controls, suspension_and_drive, objective, camera_follow, display_hud).chain(),
+            (controls, suspension_and_drive, animate_wheels, objective, camera_follow, display_hud).chain(),
         )
         .run();
 }
@@ -302,12 +311,12 @@ fn truck(
         Truck,
         RigidBody::Dynamic,
         Collider::cuboid(1.02, 0.39, 1.77),
-        ColliderMassProperties::Mass(930.0),
-        Damping { linear_damping: 0.10, angular_damping: 0.9 },
+        ColliderMassProperties::Mass(CAR_MASS),
+        Damping { linear_damping: 0.24, angular_damping: 1.25 },
         Ccd::enabled(),
         Velocity::zero(),
         ExternalForce::default(),
-        Transform::from_xyz(road_x(START), height(road_x(START), START) + 1.35, START),
+        Transform::from_xyz(road_x(START), height(road_x(START), START) + 1.05, START),
     )).id();
     commands.entity(car).with_children(|p| {
         p.spawn((Mesh3d(meshes.add(Cuboid::new(2.05, 0.75, 3.6))),
@@ -318,10 +327,14 @@ fn truck(
             MeshMaterial3d(glass), Transform::from_xyz(0.0, 0.72, 0.63)));
         p.spawn((Mesh3d(meshes.add(Cuboid::new(2.15, 0.22, 0.23))),
             MeshMaterial3d(metal), Transform::from_xyz(0.0, -0.26, 1.84)));
-        for position in MOUNTS {
-            p.spawn((Mesh3d(tire.clone()), MeshMaterial3d(rubber.clone()),
-                Transform::from_translation(position + Vec3::new(0.0, -0.34, 0.0))
-                    .with_rotation(Quat::from_rotation_z(FRAC_PI_2))));
+        for (index, position) in MOUNTS.iter().enumerate() {
+            p.spawn((
+                WheelVisual { index },
+                Mesh3d(tire.clone()),
+                MeshMaterial3d(rubber.clone()),
+                Transform::from_translation(*position - Vec3::Y * SUSPENSION)
+                    .with_rotation(Quat::from_rotation_z(FRAC_PI_2)),
+            ));
         }
         for x in [-0.72, 0.72] {
             p.spawn((Mesh3d(meshes.add(Cuboid::new(0.35, 0.2, 0.11))),
@@ -347,7 +360,7 @@ fn controls(
     if keys.just_pressed(KeyCode::KeyR) {
         if let Ok((mut transform, mut speed, mut force)) = cars.single_mut() {
             let x = road_x(START);
-            transform.translation = Vec3::new(x, height(x, START) + 1.65, START);
+            transform.translation = Vec3::new(x, height(x, START) + 1.15, START);
             transform.rotation = Quat::IDENTITY;
             *speed = Velocity::zero();
             *force = ExternalForce::default();
@@ -356,9 +369,22 @@ fn controls(
     }
 }
 
+// Le véhicule se déplace vers +Z ; avec la caméra derrière lui, le côté droit
+// de l'image correspond à -X dans ce repère. On inverse donc la direction de
+// braquage à l'entrée (D = droite à l'écran, Q/A = gauche).
+fn steering_input(keys: &ButtonInput<KeyCode>) -> f32 {
+    -axis(keys, &[KeyCode::KeyD, KeyCode::ArrowRight],
+        &[KeyCode::KeyA, KeyCode::KeyQ, KeyCode::ArrowLeft])
+}
+
+fn suspension_force(compression: f32, vertical_speed: f32) -> f32 {
+    (compression * SPRING_STIFFNESS - vertical_speed * SPRING_DAMPING)
+        .clamp(0.0, MAX_SPRING_FORCE)
+}
+
 fn suspension_and_drive(
     keys: Res<ButtonInput<KeyCode>>,
-    state: Res<GameState>,
+    mut state: ResMut<GameState>,
     context: ReadRapierContext,
     mut cars: Query<(Entity, &Transform, &Velocity, &mut ExternalForce), With<Truck>>,
 ) {
@@ -366,53 +392,100 @@ fn suspension_and_drive(
     let Ok((entity, transform, velocity, mut external)) = cars.single_mut() else { return; };
     let gas = axis(&keys, &[KeyCode::KeyW, KeyCode::KeyZ, KeyCode::ArrowUp],
         &[KeyCode::KeyS, KeyCode::ArrowDown]);
-    let steer = axis(&keys, &[KeyCode::KeyD, KeyCode::ArrowRight],
-        &[KeyCode::KeyA, KeyCode::KeyQ, KeyCode::ArrowLeft]);
+    let steer = steering_input(&keys);
     let braking = keys.pressed(KeyCode::Space);
 
     let forward = transform.rotation * Vec3::Z;
     let right = transform.rotation * Vec3::X;
     let up = transform.rotation * Vec3::Y;
     let forward_speed = velocity.linear.dot(forward);
-    let top_speed = if state.low_range { 7.0 } else { 17.0 };
-    let motor_force = if state.low_range { 1540.0 } else { 1030.0 };
+    let max_speed = if state.low_range { 5.0 } else { 12.5 };
+    let engine = if state.low_range { 1_450.0 } else { 1_090.0 };
+    // Moins d'angle de braquage à haute vitesse pour éviter les tête-à-queue.
+    let steer_angle = steer * 0.43 / (1.0 + forward_speed.abs() * 0.065);
     let mut force = Vec3::ZERO;
     let mut torque = Vec3::ZERO;
     let mut contacts = 0;
 
     for (i, mount) in MOUNTS.iter().enumerate() {
         let r = transform.rotation * *mount;
-        let ray_origin = transform.translation + r;
+        let origin = transform.translation + r;
         let filter = QueryFilter::default().exclude_rigid_body(entity);
         let Some((_, hit)) = rapier.cast_ray_and_get_normal(
-            ray_origin, -up, SUSPENSION + WHEEL_RADIUS, true, filter
-        ) else { continue; };
-        if hit.normal.dot(Vec3::Y) < 0.35 { continue; }
+            origin, -up, SUSPENSION + WHEEL_RADIUS, true, filter
+        ) else { continue };
+        if hit.normal.dot(Vec3::Y) < 0.42 { continue; }
         contacts += 1;
-        let travel = hit.time_of_impact - WHEEL_RADIUS;
-        let compression = (SUSPENSION - travel).clamp(0.0, SUSPENSION);
-        let at_wheel = velocity.linear + velocity.angular.cross(r);
-        let spring = (compression * 12000.0 - at_wheel.dot(up) * 2100.0).max(0.0);
+
+        let travel = (hit.time_of_impact - WHEEL_RADIUS).clamp(0.0, SUSPENSION);
+        let compression = SUSPENSION - travel;
+        let at_mount = velocity.linear + velocity.angular.cross(r);
+        let spring = suspension_force(compression, at_mount.dot(up));
         let mut wheel_force = up * spring;
 
-        let angle = if i < 2 { steer * 0.40 } else { 0.0 };
-        let heading = Quat::from_axis_angle(up, angle) * forward;
-        let side = Quat::from_axis_angle(up, angle) * right;
-        wheel_force -= side * (at_wheel.dot(side) * 1700.0).clamp(-5000.0, 5000.0);
-        wheel_force -= heading * at_wheel.dot(heading) * if braking { 1800.0 } else { 95.0 };
-        if gas != 0.0 && (forward_speed.abs() < top_speed || forward_speed.signum() != gas.signum()) {
-            wheel_force += heading * gas * motor_force;
+        let angle = if i < 2 { steer_angle } else { 0.0 };
+        let rotation = Quat::from_axis_angle(up, angle);
+        let heading = rotation * forward;
+        let side = rotation * right;
+        // Le pneu s'oppose à la glissade latérale, mais garde assez de souplesse
+        // pour rester contrôlable en traversant les bosses.
+        wheel_force -= side * (at_mount.dot(side) * 1_650.0).clamp(-4_600.0, 4_600.0);
+        wheel_force -= heading * at_mount.dot(heading)
+            * if braking { 1_950.0 } else { 95.0 };
+
+        if gas.abs() > 0.01
+            && (forward_speed.abs() < max_speed || forward_speed.signum() != gas.signum())
+        {
+            wheel_force += heading * gas * engine;
         }
+
         force += wheel_force;
+        // Forces appliquées à la position de la roue, et non au centre du châssis.
         torque += r.cross(wheel_force);
     }
-    // Aide arcade tres discrete pour faciliter les virages lents.
+    state.grounded_wheels = contacts;
     if contacts > 0 {
-        torque += up * steer * forward_speed.clamp(-9.0, 9.0) * 350.0;
-        torque -= velocity.angular * 420.0;
+        // Assistance faible ; on privilégie les forces de pneus au pivot forcé.
+        torque += up * steer * forward_speed.clamp(-8.0, 8.0) * 140.0;
+        torque -= velocity.angular * 290.0;
     }
     external.force = force;
     external.torque = torque;
+}
+
+// La position des roues affichées suit le vrai débattement raycast.
+// Avant, elles restaient fixes à 34 cm sous le point d'attache et semblaient
+// flotter dans le vide pendant que le châssis reposait sur ses ressorts.
+fn animate_wheels(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    context: ReadRapierContext,
+    cars: Query<(Entity, &Transform, &Velocity), With<Truck>>,
+    mut wheels: Query<(&WheelVisual, &mut Transform), Without<Truck>>,
+) {
+    let Ok(rapier) = context.single() else { return; };
+    let Ok((car_entity, car, velocity)) = cars.single() else { return; };
+    let forward = car.rotation * Vec3::Z;
+    let up = car.rotation * Vec3::Y;
+    let wheel_speed = velocity.linear.dot(forward) / WHEEL_RADIUS;
+    let steer = steering_input(&keys);
+    let steer_angle = steer * 0.43 / (1.0 + velocity.linear.dot(forward).abs() * 0.065);
+    for (wheel, mut transform) in &mut wheels {
+        let mount = MOUNTS[wheel.index];
+        let origin = car.translation + car.rotation * mount;
+        let travel = rapier.cast_ray_and_get_normal(
+            origin, -up, SUSPENSION + WHEEL_RADIUS, true,
+            QueryFilter::default().exclude_rigid_body(car_entity),
+        ).filter(|(_, hit)| hit.normal.dot(Vec3::Y) >= 0.42)
+            .map(|(_, hit)| (hit.time_of_impact - WHEEL_RADIUS).clamp(0.0, SUSPENSION))
+            .unwrap_or(SUSPENSION);
+
+        transform.translation = mount - Vec3::Y * travel;
+        let angle = if wheel.index < 2 { steer_angle } else { 0.0 };
+        transform.rotation = Quat::from_rotation_y(angle)
+            * Quat::from_rotation_z(FRAC_PI_2)
+            * Quat::from_rotation_y(wheel_speed * time.elapsed_secs().rem_euclid(TAU));
+    }
 }
 
 fn objective(mut state: ResMut<GameState>, cars: Query<&Transform, With<Truck>>) {
@@ -430,8 +503,10 @@ fn camera_follow(
     mut cameras: Query<&mut Transform, (With<ChaseCamera>, Without<Truck>)>,
 ) {
     let (Ok(car), Ok(mut camera)) = (cars.single(), cameras.single_mut()) else { return; };
-    let forward = car.rotation * Vec3::Z;
-    let destination = car.translation - forward * 10.5 + Vec3::Y * 5.2;
+    // Caméra stable : elle suit le cap horizontal, sans hériter du roulis.
+    let forward = (car.rotation * Vec3::Z).with_y(0.0).normalize_or_zero();
+    let forward = if forward.length_squared() < 0.01 { Vec3::Z } else { forward };
+    let destination = car.translation - forward * 9.8 + Vec3::Y * 4.5;
     let alpha = 1.0 - (-4.5 * time.delta_secs()).exp();
     camera.translation = camera.translation.lerp(destination, alpha);
     camera.look_at(car.translation + Vec3::Y * 0.9 + forward * 3.0, Vec3::Y);
@@ -444,11 +519,12 @@ fn display_hud(
 ) {
     let (Ok(speed), Ok(mut text)) = (cars.single(), hud.single_mut()) else { return; };
     let range = if state.low_range { "COURTE" } else { "NORMALE" };
+    let wheels_on_ground = state.grounded_wheels;
     let mission = if state.reached_refuge { "REFUGE ATTEINT ! Explore librement." }
         else { "OBJECTIF : rejoindre le refuge au sommet de la piste" };
     text.0 = format!(
-        "MOTOR TRAIL  |  {:.0} km/h  |  GAMME {range}\n{mission}\n\
-        Z/W avancer  S reculer  Q/A/D tourner  Espace frein\n\
+        "MOTOR TRAIL  |  {:.0} km/h  |  GAMME {range}  |  Roues au sol: {wheels_on_ground}/4\n{mission}\n\
+        Z/W avancer  S reculer  Q/A gauche  D droite  Espace frein\n\
         L gamme courte  R recommencer  Echap quitter",
         speed.linear.length() * 3.6
     );
@@ -467,6 +543,20 @@ mod tests {
             let n = normal(road_x(z), z);
             assert!(n.is_finite() && n.y > 0.5);
         }
+    }
+    #[test]
+    fn vehicle_static_sag_is_plausible() {
+        // La roue doit toucher le sol, et le corps du 4x4 ne doit pas flotter.
+        let compression = CAR_MASS * 9.81 / (4.0 * SPRING_STIFFNESS);
+        let wheel_drop = SUSPENSION - compression;
+        let chassis_height = 0.22 + WHEEL_RADIUS + wheel_drop;
+        assert!(chassis_height > 0.72 && chassis_height < 1.05);
+        assert!((chassis_height - 0.22 - wheel_drop - WHEEL_RADIUS).abs() < 0.001);
+    }
+    #[test]
+    fn suspension_does_not_pull_vehicle_down() {
+        assert_eq!(suspension_force(0.0, 1.0), 0.0);
+        assert!(suspension_force(0.15, 0.0) > 0.0);
     }
     #[test]
     fn road_stays_inside_map() {
