@@ -13,7 +13,7 @@ const WIDTH: f32 = 120.0;
 const DEPTH: f32 = 165.0;
 const START: f32 = -67.0;
 const FINISH: f32 = 65.0;
-const WHEEL_RADIUS: f32 = 0.46;
+const WHEEL_RADIUS: f32 = 0.53; // Rayon du pneu fourni dans le nouveau GLB.
 // Débattement volontairement court : la version précédente portait le châssis
 // trop haut et les roues visuelles n'atteignaient jamais le sol.
 const SUSPENSION: f32 = 0.36;
@@ -61,6 +61,17 @@ const CAMERA_MIN_DISTANCE: f32 = 3.3;
 const CAMERA_MAX_DISTANCE: f32 = 19.0;
 #[derive(Component)]
 struct WheelVisual { index: usize, spin: f32 }
+#[derive(Resource, Default)]
+struct VehicleVisualState { spin: f32, steer: f32, travels: [f32; 4] }
+#[derive(Component)]
+struct GearKnob;
+#[derive(Component)]
+struct GearLabel { low: bool }
+#[derive(Resource)]
+struct FrameStats { smooth_fps: f32 }
+impl Default for FrameStats {
+    fn default() -> Self { Self { smooth_fps: 60.0 } }
+}
 #[derive(Component)]
 struct Hud;
 
@@ -76,6 +87,8 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.69, 0.82, 0.94)))
         .init_resource::<GameState>()
         .init_resource::<OrbitCamera>()
+        .init_resource::<VehicleVisualState>()
+        .init_resource::<FrameStats>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Motor Trail | Rando 4x4".into(),
@@ -88,7 +101,7 @@ fn main() {
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (controls, suspension_and_drive, animate_wheels, objective, camera_follow, display_hud).chain(),
+            (controls, suspension_and_drive, animate_wheels, objective, camera_follow, display_hud, update_gear_widget).chain(),
         )
         .run();
 }
@@ -176,6 +189,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
     commands.spawn((
         DirectionalLight { illuminance: 13_000.0, shadow_maps_enabled: true, ..default() },
@@ -194,7 +208,7 @@ fn setup(
     forest(&mut commands, &mut meshes, &mut materials);
     rocks(&mut commands, &mut meshes, &mut materials);
     refuge(&mut commands, &mut meshes, &mut materials);
-    truck(&mut commands, &mut meshes, &mut materials);
+    truck(&mut commands, &asset_server);
 
     commands.spawn((
         Camera3d::default(),
@@ -214,6 +228,86 @@ fn setup(
         },
         Hud,
     ));
+    spawn_gear_widget(&mut commands);
+}
+
+fn spawn_gear_widget(commands: &mut Commands) {
+    // Levier de gamme fixe en bas à droite, indépendant des textes de diagnostic.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(24.0), bottom: Val::Px(24.0),
+            width: Val::Px(204.0), height: Val::Px(170.0),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.065, 0.085, 0.11, 0.89)),
+    )).with_children(|panel| {
+        panel.spawn((
+            Text::new("TRANSFERT 4×4"),
+            TextFont { font_size: FontSize::Px(17.0), ..default() },
+            TextColor(Color::WHITE),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(14.0), top: Val::Px(10.0), ..default()
+            },
+        ));
+        panel.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(29.0), top: Val::Px(47.0),
+                width: Val::Px(7.0), height: Val::Px(100.0), ..default()
+            },
+            BackgroundColor(Color::srgb(0.41, 0.45, 0.48)),
+        ));
+        panel.spawn((
+            GearKnob,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(19.0), top: Val::Px(116.0),
+                width: Val::Px(27.0), height: Val::Px(27.0), ..default()
+            },
+            BackgroundColor(Color::srgb(0.95, 0.64, 0.19)),
+            BorderRadius::all(Val::Px(14.0)),
+        ));
+        panel.spawn((
+            GearLabel { low: true },
+            Text::new("L    COURTE"),
+            TextFont { font_size: FontSize::Px(19.0), ..default() },
+            TextColor(Color::srgb(0.64, 0.67, 0.70)),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(58.0), top: Val::Px(54.0), ..default()
+            },
+        ));
+        panel.spawn((
+            GearLabel { low: false },
+            Text::new("H    NORMALE"),
+            TextFont { font_size: FontSize::Px(19.0), ..default() },
+            TextColor(Color::srgb(0.95, 0.64, 0.19)),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(58.0), top: Val::Px(120.0), ..default()
+            },
+        ));
+    });
+}
+
+fn update_gear_widget(
+    state: Res<GameState>,
+    mut knob: Query<&mut Node, With<GearKnob>>,
+    mut labels: Query<(&GearLabel, &mut TextColor)>,
+) {
+    if !state.is_changed() { return; }
+    if let Ok(mut node) = knob.single_mut() {
+        node.top = Val::Px(if state.low_range { 49.0 } else { 116.0 });
+    }
+    for (label, mut color) in &mut labels {
+        color.0 = if label.low == state.low_range {
+            Color::srgb(0.95, 0.64, 0.19)
+        } else {
+            Color::srgb(0.64, 0.67, 0.70)
+        };
+    }
 }
 
 fn pseudo(seed: f32) -> f32 {
@@ -326,49 +420,29 @@ fn refuge(
     ));
 }
 
-fn truck(
-    commands: &mut Commands, meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-) {
-    let paint = materials.add(Color::srgb(0.80, 0.32, 0.16));
-    let glass = materials.add(Color::srgb(0.23, 0.36, 0.43));
-    let rubber = materials.add(Color::srgb(0.12, 0.14, 0.15));
-    let metal = materials.add(Color::srgb(0.27, 0.29, 0.28));
-    let lights = materials.add(Color::srgb(0.97, 0.83, 0.48));
-    let tire = meshes.add(Cylinder::new(WHEEL_RADIUS, 0.30));
+fn truck(commands: &mut Commands, asset_server: &AssetServer) {
+    let x = road_x(START);
     let car = commands.spawn((
         Truck,
         RigidBody::Dynamic,
-        Collider::cuboid(1.02, 0.39, 1.77),
+        Collider::cuboid(1.10, 0.40, 1.92),
         ColliderMassProperties::Mass(CAR_MASS),
-        Damping { linear_damping: 0.24, angular_damping: 1.25 },
+        Damping { linear_damping: 0.12, angular_damping: 1.25 },
         Ccd::enabled(),
         Velocity::zero(),
         ExternalForce::default(),
-        Transform::from_xyz(road_x(START), height(road_x(START), START) + 1.05, START),
+        Transform::from_xyz(x, height(x, START) + 1.06, START),
     )).id();
+
+    // Ce modèle est livré avec l'avant en -Z alors que la physique du jeu va
+    // vers +Z. Le pivot est donc retourné de PI autour de Y, sans toucher
+    // aux colliders ou aux points d'attache des roues.
     commands.entity(car).with_children(|p| {
-        p.spawn((Mesh3d(meshes.add(Cuboid::new(2.05, 0.75, 3.6))),
-            MeshMaterial3d(paint.clone()), Transform::default()));
-        p.spawn((Mesh3d(meshes.add(Cuboid::new(1.83, 0.8, 1.8))),
-            MeshMaterial3d(paint), Transform::from_xyz(0.0, 0.65, -0.3)));
-        p.spawn((Mesh3d(meshes.add(Cuboid::new(1.7, 0.5, 0.08))),
-            MeshMaterial3d(glass), Transform::from_xyz(0.0, 0.72, 0.63)));
-        p.spawn((Mesh3d(meshes.add(Cuboid::new(2.15, 0.22, 0.23))),
-            MeshMaterial3d(metal), Transform::from_xyz(0.0, -0.26, 1.84)));
-        for (index, position) in MOUNTS.iter().enumerate() {
-            p.spawn((
-                WheelVisual { index, spin: 0.0 },
-                Mesh3d(tire.clone()),
-                MeshMaterial3d(rubber.clone()),
-                Transform::from_translation(*position - Vec3::Y * SUSPENSION)
-                    .with_rotation(Quat::from_rotation_z(FRAC_PI_2)),
-            ));
-        }
-        for x in [-0.72, 0.72] {
-            p.spawn((Mesh3d(meshes.add(Cuboid::new(0.35, 0.2, 0.11))),
-                MeshMaterial3d(lights.clone()), Transform::from_xyz(x, -0.03, 1.84)));
-        }
+        p.spawn((
+            SceneRoot(asset_server.load("vehicles/motor_trail_4x4.glb#Scene0")),
+            Transform::from_xyz(0.0, -1.0, 0.0)
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+        ));
     });
 }
 
@@ -428,8 +502,10 @@ fn suspension_and_drive(
     let right = transform.rotation * Vec3::X;
     let up = transform.rotation * Vec3::Y;
     let forward_speed = velocity.linear.dot(forward);
-    let max_speed = if state.low_range { 5.0 } else { 12.5 };
-    let engine = if state.low_range { 1_450.0 } else { 1_090.0 };
+    // Les anciennes valeurs donnaient un véhicule anémique en montée.
+    // Le moteur produit davantage de couple, et la résistance passive est moindre.
+    let max_speed = if state.low_range { 7.0 } else { 18.0 };
+    let engine = if state.low_range { 2_100.0 } else { 1_650.0 };
     // Moins d'angle de braquage à haute vitesse pour éviter les tête-à-queue.
     let steer_angle = steer * 0.43 / (1.0 + forward_speed.abs() * 0.065);
     let mut force = Vec3::ZERO;
@@ -452,7 +528,10 @@ fn suspension_and_drive(
         let spring = suspension_force(compression, at_mount.dot(up));
         let mut wheel_force = up * spring;
 
-        let angle = if i < 2 { steer_angle } else { 0.0 };
+        // Au point mort, les roues AV ne doivent pas exercer un couple de lacet
+        // quand le joueur ne fait que braquer à l'arrêt.
+        let stationary = forward_speed.abs() < 0.65 && gas.abs() < 0.01;
+        let angle = if i < 2 && !stationary { steer_angle } else { 0.0 };
         let rotation = Quat::from_axis_angle(up, angle);
         let heading = rotation * forward;
         let side = rotation * right;
@@ -460,7 +539,7 @@ fn suspension_and_drive(
         // pour rester contrôlable en traversant les bosses.
         wheel_force -= side * (at_mount.dot(side) * 1_650.0).clamp(-4_600.0, 4_600.0);
         wheel_force -= heading * at_mount.dot(heading)
-            * if braking { 1_950.0 } else { 95.0 };
+            * if braking { 1_950.0 } else { 22.0 };
 
         if gas.abs() > 0.01
             && (forward_speed.abs() < max_speed || forward_speed.signum() != gas.signum())
@@ -475,7 +554,9 @@ fn suspension_and_drive(
     state.grounded_wheels = contacts;
     if contacts > 0 {
         // Assistance faible ; on privilégie les forces de pneus au pivot forcé.
-        torque += up * steer * forward_speed.clamp(-8.0, 8.0) * 140.0;
+        if forward_speed.abs() > 0.65 {
+            torque += up * steer * forward_speed.clamp(-8.0, 8.0) * 110.0;
+        }
         torque -= velocity.angular * 290.0;
     }
     external.force = force;
@@ -490,31 +571,48 @@ fn animate_wheels(
     keys: Res<ButtonInput<KeyCode>>,
     context: ReadRapierContext,
     cars: Query<(Entity, &Transform, &Velocity), With<Truck>>,
-    mut wheels: Query<(&mut WheelVisual, &mut Transform), Without<Truck>>,
+    mut visual: ResMut<VehicleVisualState>,
+    mut nodes: Query<(&Name, &mut Transform), Without<Truck>>,
 ) {
     let Ok(rapier) = context.single() else { return; };
     let Ok((car_entity, car, velocity)) = cars.single() else { return; };
     let forward = car.rotation * Vec3::Z;
     let up = car.rotation * Vec3::Y;
-    let wheel_speed = velocity.linear.dot(forward) / WHEEL_RADIUS;
+    let speed = velocity.linear.dot(forward);
     let steer = steering_input(&keys);
-    let steer_angle = steer * 0.43 / (1.0 + velocity.linear.dot(forward).abs() * 0.065);
-    for (mut wheel, mut transform) in &mut wheels {
-        let mount = MOUNTS[wheel.index];
-        let origin = car.translation + car.rotation * mount;
-        let travel = rapier.cast_ray_and_get_normal(
+    visual.steer = steer * 0.43 / (1.0 + speed.abs() * 0.065);
+    visual.spin = (visual.spin + (speed / WHEEL_RADIUS) * time.delta_secs())
+        .rem_euclid(TAU);
+    for (i, mount) in MOUNTS.iter().enumerate() {
+        let origin = car.translation + car.rotation * *mount;
+        visual.travels[i] = rapier.cast_ray_and_get_normal(
             origin, -up, SUSPENSION + WHEEL_RADIUS, true,
             QueryFilter::default().exclude_rigid_body(car_entity),
         ).filter(|(_, hit)| hit.normal.dot(Vec3::Y) >= 0.42)
             .map(|(_, hit)| (hit.time_of_impact - WHEEL_RADIUS).clamp(0.0, SUSPENSION))
             .unwrap_or(SUSPENSION);
-
-        transform.translation = mount - Vec3::Y * travel;
-        let angle = if wheel.index < 2 { steer_angle } else { 0.0 };
-        wheel.spin = (wheel.spin + wheel_speed * time.delta_secs()).rem_euclid(TAU);
-        transform.rotation = Quat::from_rotation_y(angle)
-            * Quat::from_rotation_z(FRAC_PI_2)
-            * Quat::from_rotation_y(wheel.spin);
+    }
+    // L'importeur glTF instancie les entités nommées après le chargement de la
+    // scène. Chaque pivot reste local à son parent, et sa roue suit la physique.
+    // Le modèle a été retourné autour de Y, d'où le miroir gauche/droite.
+    for (name, mut transform) in &mut nodes {
+        let n = name.as_str();
+        let wheel = match n {
+            "Suspension_FL" | "Steer_FL" | "WheelSpin_FL" => Some(1),
+            "Suspension_FR" | "Steer_FR" | "WheelSpin_FR" => Some(0),
+            "Suspension_RL" | "WheelSpin_RL" => Some(3),
+            "Suspension_RR" | "WheelSpin_RR" => Some(2),
+            _ => None,
+        };
+        let Some(index) = wheel else { continue };
+        if n.starts_with("Suspension_") {
+            // 0.78 = base locale (.56) + débattement au repos (.22).
+            transform.translation.y = 0.78 - visual.travels[index];
+        } else if n.starts_with("Steer_") {
+            transform.rotation = Quat::from_rotation_y(visual.steer);
+        } else if n.starts_with("WheelSpin_") {
+            transform.rotation = Quat::from_rotation_x(visual.spin);
+        }
     }
 }
 
@@ -552,7 +650,7 @@ fn camera_follow(
     if mouse_buttons.pressed(MouseButton::Right) {
         orbit.yaw_offset = (orbit.yaw_offset - mouse_motion.delta.x * ORBIT_SENSITIVITY)
             .rem_euclid(TAU);
-        orbit.pitch = (orbit.pitch - mouse_motion.delta.y * ORBIT_SENSITIVITY)
+        orbit.pitch = (orbit.pitch + mouse_motion.delta.y * ORBIT_SENSITIVITY)
             .clamp(PITCH_MIN, PITCH_MAX);
     }
     // Zoom proportionnel à la distance pour être précis près du véhicule.
@@ -604,20 +702,27 @@ fn camera_follow(
 
 fn display_hud(
     state: Res<GameState>,
+    time: Res<Time>,
+    mut frames: ResMut<FrameStats>,
     cars: Query<&Velocity, With<Truck>>,
     mut hud: Query<&mut Text, With<Hud>>,
 ) {
     let (Ok(speed), Ok(mut text)) = (cars.single(), hud.single_mut()) else { return; };
     let range = if state.low_range { "COURTE" } else { "NORMALE" };
     let wheels_on_ground = state.grounded_wheels;
+    if time.delta_secs() > 0.0 {
+        let instant = (1.0 / time.delta_secs()).clamp(0.0, 500.0);
+        frames.smooth_fps += (instant - frames.smooth_fps) * 0.06;
+    }
     let mission = if state.reached_refuge { "REFUGE ATTEINT ! Explore librement." }
         else { "OBJECTIF : rejoindre le refuge au sommet de la piste" };
     text.0 = format!(
-        "MOTOR TRAIL  |  {:.0} km/h  |  GAMME {range}  |  Roues au sol: {wheels_on_ground}/4\n{mission}\n\
+        "MOTOR TRAIL  |  {:.0} km/h  |  {:.0} FPS  |  Roues au sol: {wheels_on_ground}/4\n{mission}\n\
         Z/W avancer  S reculer  Q/A gauche  D droite  Espace frein\n\
-        Clic droit + souris : tourner la camera  |  Molette : zoom  |  C : vue arriere\n\
-        L gamme courte  R recommencer  Echap quitter",
-        speed.linear.length() * 3.6
+        Clic droit + souris : camera  |  Molette : zoom  |  C : arriere\n\
+        L : gamme {range}  R : recommencer  Echap : quitter",
+        speed.linear.length() * 3.6,
+        frames.smooth_fps,
     );
 }
 
@@ -648,6 +753,11 @@ mod tests {
     fn suspension_does_not_pull_vehicle_down() {
         assert_eq!(suspension_force(0.0, 1.0), 0.0);
         assert!(suspension_force(0.15, 0.0) > 0.0);
+    }
+    #[test]
+    fn motor_has_more_headroom() {
+        assert!(18.0 * 3.6 >= 60.0);
+        assert!(7.0 < 18.0);
     }
     #[test]
     fn camera_orbit_defaults_to_rear_view() {
