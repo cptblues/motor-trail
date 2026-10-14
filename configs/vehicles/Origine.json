@@ -1,0 +1,45 @@
+{
+  "model": "Legacy",
+  "chassis": {
+    "mass_kg": 930.0,
+    "center_of_mass": [0.0, 0.0, 0.0],
+    "linear_damping": 0.12,
+    "angular_damping": 1.25,
+    "hill_hold_strength": 0.0
+  },
+  "front": {
+    "stiffness_n_per_m": 15000.0,
+    "compression_damping_ns_per_m": 1750.0,
+    "rebound_damping_ns_per_m": 1750.0,
+    "rest_length_m": 0.36,
+    "max_travel_m": 0.36,
+    "max_force_n": 8500.0
+  },
+  "rear": {
+    "stiffness_n_per_m": 15000.0,
+    "compression_damping_ns_per_m": 1750.0,
+    "rebound_damping_ns_per_m": 1750.0,
+    "rest_length_m": 0.36,
+    "max_travel_m": 0.36,
+    "max_force_n": 8500.0
+  },
+  "tires": {
+    "radius_m": 0.53,
+    "grip_coefficient": 1.35,
+    "lateral_stiffness": 1.0,
+    "rolling_resistance_n": 0.0,
+    "rolling_drag_ns_per_m": 88.0
+  },
+  "drivetrain": {
+    "engine_force_n": 6600.0,
+    "throttle_response_hz": 1000.0,
+    "normal_ratio": 1.0,
+    "low_ratio": 1.2727273,
+    "normal_max_speed_mps": 18.0,
+    "low_max_speed_mps": 7.0,
+    "reverse_max_speed_mps": 18.0,
+    "brake_force_n": 0.0,
+    "legacy_brake_damping_ns_per_m": 7800.0,
+    "engine_brake_force_n": 0.0
+  }
+}
