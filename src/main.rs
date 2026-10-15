@@ -1,6 +1,10 @@
 //! Motor Trail — prototype de 4x4 Low Poly avec Bevy et Rapier.
-//! Carte, vehicule, arbres, rochers et refuge proceduraux ; aucun asset externe.
+//! Vallee procedurale et vehicule articule charge depuis le modele glTF.
 use std::f32::consts::TAU;
+
+mod persistence;
+mod ui;
+mod vehicle;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
@@ -8,28 +12,16 @@ use bevy::mesh::Indices;
 use bevy::prelude::*;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy_rapier3d::prelude::*;
+use bevy_egui::EguiPlugin;
+use persistence::ProfileStore;
+use ui::{PhysicsTuningPlugin, UiInputCapture};
+use vehicle::config::VehiclePhysicsConfig;
+use vehicle::{Truck, VehiclePhysics, VehiclePlugin, VehicleVisualState};
 
 const WIDTH: f32 = 120.0;
 const DEPTH: f32 = 165.0;
 const START: f32 = -67.0;
 const FINISH: f32 = 65.0;
-const WHEEL_RADIUS: f32 = 0.53; // Rayon du pneu fourni dans le nouveau GLB.
-// Débattement volontairement court : la version précédente portait le châssis
-// trop haut et les roues visuelles n'atteignaient jamais le sol.
-const SUSPENSION: f32 = 0.36;
-const SPRING_STIFFNESS: f32 = 15_000.0;
-const SPRING_DAMPING: f32 = 1_750.0;
-const MAX_SPRING_FORCE: f32 = 8_500.0;
-const CAR_MASS: f32 = 930.0;
-const MOUNTS: [Vec3; 4] = [
-    Vec3::new(-0.91, -0.22,  1.22),
-    Vec3::new( 0.91, -0.22,  1.22),
-    Vec3::new(-0.91, -0.22, -1.22),
-    Vec3::new( 0.91, -0.22, -1.22),
-];
-
-#[derive(Component)]
-struct Truck;
 #[derive(Component)]
 struct ChaseCamera;
 
@@ -60,10 +52,6 @@ const PITCH_MAX: f32 = 1.28;
 const CAMERA_MIN_DISTANCE: f32 = 3.3;
 const CAMERA_MAX_DISTANCE: f32 = 19.0;
 #[derive(Component)]
-struct WheelVisual { index: usize, spin: f32 }
-#[derive(Resource, Default)]
-struct VehicleVisualState { spin: f32, steer: f32, travels: [f32; 4] }
-#[derive(Component)]
 struct GearKnob;
 #[derive(Component)]
 struct GearLabel { low: bool }
@@ -83,11 +71,13 @@ struct GameState {
 }
 
 fn main() {
+    let (config, profiles) = ProfileStore::bootstrap("configs/vehicles");
     App::new()
+        .insert_resource(config)
+        .insert_resource(profiles)
         .insert_resource(ClearColor(Color::srgb(0.69, 0.82, 0.94)))
         .init_resource::<GameState>()
         .init_resource::<OrbitCamera>()
-        .init_resource::<VehicleVisualState>()
         .init_resource::<FrameStats>()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -97,11 +87,11 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(RapierPhysicsPlugin::<NoUserData>::default())
+        .add_plugins((VehiclePlugin, EguiPlugin::default(), PhysicsTuningPlugin))
         .add_systems(Startup, setup)
         .add_systems(
             Update,
-            (controls, suspension_and_drive, animate_wheels, objective, camera_follow, display_hud, update_gear_widget).chain(),
+            (controls, objective, camera_follow, display_hud, update_gear_widget).chain(),
         )
         .run();
 }
@@ -190,6 +180,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    config: Res<VehiclePhysicsConfig>,
 ) {
     commands.spawn((
         DirectionalLight { illuminance: 13_000.0, shadow_maps_enabled: true, ..default() },
@@ -208,7 +199,7 @@ fn setup(
     forest(&mut commands, &mut meshes, &mut materials);
     rocks(&mut commands, &mut meshes, &mut materials);
     refuge(&mut commands, &mut meshes, &mut materials);
-    truck(&mut commands, &asset_server);
+    truck(&mut commands, &asset_server, &config);
 
     commands.spawn((
         Camera3d::default(),
@@ -421,18 +412,11 @@ fn refuge(
     ));
 }
 
-fn truck(commands: &mut Commands, asset_server: &AssetServer) {
+fn truck(commands: &mut Commands, asset_server: &AssetServer, config: &VehiclePhysicsConfig) {
     let x = road_x(START);
     let car = commands.spawn((
-        Truck,
-        RigidBody::Dynamic,
-        Collider::cuboid(1.10, 0.40, 1.92),
-        ColliderMassProperties::Mass(CAR_MASS),
-        Damping { linear_damping: 0.12, angular_damping: 1.25 },
-        Ccd::enabled(),
-        Velocity::zero(),
-        ExternalForce::default(),
-        Transform::from_xyz(x, height(x, START) + 1.06, START),
+        vehicle::controller::chassis_bundle(config),
+        Transform::from_xyz(x, height(x, START) + vehicle::controller::spawn_height(config), START),
     )).id();
 
     // Ce modèle est livré avec l'avant en -Z alors que la physique du jeu va
@@ -447,175 +431,36 @@ fn truck(commands: &mut Commands, asset_server: &AssetServer) {
     });
 }
 
-fn axis(keys: &ButtonInput<KeyCode>, pos: &[KeyCode], neg: &[KeyCode]) -> f32 {
-    let a = pos.iter().any(|k| keys.pressed(*k)) as i32;
-    let b = neg.iter().any(|k| keys.pressed(*k)) as i32;
-    (a - b) as f32
-}
-
 fn controls(
     keys: Res<ButtonInput<KeyCode>>,
+    capture: Res<UiInputCapture>,
+    config: Res<VehiclePhysicsConfig>,
     mut state: ResMut<GameState>,
+    mut physics: ResMut<VehiclePhysics>,
+    mut visual: ResMut<VehicleVisualState>,
+    mut telemetry: ResMut<vehicle::telemetry::VehicleTelemetry>,
     mut cars: Query<(&mut Transform, &mut Velocity, &mut ExternalForce), With<Truck>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if capture.keyboard { return; }
     if keys.just_pressed(KeyCode::KeyL) { state.low_range = !state.low_range; }
     if keys.just_pressed(KeyCode::Escape) { exit.write(AppExit::Success); }
     if keys.just_pressed(KeyCode::KeyR) {
         if let Ok((mut transform, mut speed, mut force)) = cars.single_mut() {
             let x = road_x(START);
-            transform.translation = Vec3::new(x, height(x, START) + 1.15, START);
+            transform.translation = Vec3::new(x, height(x, START) + vehicle::controller::spawn_height(&config), START);
             transform.rotation = Quat::IDENTITY;
             *speed = Velocity::zero();
             *force = ExternalForce::default();
+            *physics = VehiclePhysics::default();
+            *visual = VehicleVisualState::default();
+            telemetry.reset_motion_history();
+            state.grounded_wheels = 0;
             state.reached_refuge = false;
         }
     }
 }
 
-// Le véhicule se déplace vers +Z ; avec la caméra derrière lui, le côté droit
-// de l'image correspond à -X dans ce repère. On inverse donc la direction de
-// braquage à l'entrée (D = droite à l'écran, Q/A = gauche).
-fn steering_input(keys: &ButtonInput<KeyCode>) -> f32 {
-    -axis(keys, &[KeyCode::KeyD, KeyCode::ArrowRight],
-        &[KeyCode::KeyA, KeyCode::KeyQ, KeyCode::ArrowLeft])
-}
-
-fn suspension_force(compression: f32, vertical_speed: f32) -> f32 {
-    (compression * SPRING_STIFFNESS - vertical_speed * SPRING_DAMPING)
-        .clamp(0.0, MAX_SPRING_FORCE)
-}
-
-fn suspension_and_drive(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut state: ResMut<GameState>,
-    context: ReadRapierContext,
-    mut cars: Query<(Entity, &Transform, &Velocity, &mut ExternalForce), With<Truck>>,
-) {
-    let Ok(rapier) = context.single() else { return; };
-    let Ok((entity, transform, velocity, mut external)) = cars.single_mut() else { return; };
-    let gas = axis(&keys, &[KeyCode::KeyW, KeyCode::KeyZ, KeyCode::ArrowUp],
-        &[KeyCode::KeyS, KeyCode::ArrowDown]);
-    let steer = steering_input(&keys);
-    let braking = keys.pressed(KeyCode::Space);
-
-    let forward = transform.rotation * Vec3::Z;
-    let right = transform.rotation * Vec3::X;
-    let up = transform.rotation * Vec3::Y;
-    let forward_speed = velocity.linear.dot(forward);
-    // Les anciennes valeurs donnaient un véhicule anémique en montée.
-    // Le moteur produit davantage de couple, et la résistance passive est moindre.
-    let max_speed = if state.low_range { 7.0 } else { 18.0 };
-    let engine = if state.low_range { 2_100.0 } else { 1_650.0 };
-    // Moins d'angle de braquage à haute vitesse pour éviter les tête-à-queue.
-    let steer_angle = steer * 0.43 / (1.0 + forward_speed.abs() * 0.065);
-    let mut force = Vec3::ZERO;
-    let mut torque = Vec3::ZERO;
-    let mut contacts = 0;
-
-    for (i, mount) in MOUNTS.iter().enumerate() {
-        let r = transform.rotation * *mount;
-        let origin = transform.translation + r;
-        let filter = QueryFilter::default().exclude_rigid_body(entity);
-        let Some((_, hit)) = rapier.cast_ray_and_get_normal(
-            origin, -up, SUSPENSION + WHEEL_RADIUS, true, filter
-        ) else { continue };
-        if hit.normal.dot(Vec3::Y) < 0.42 { continue; }
-        contacts += 1;
-
-        let travel = (hit.time_of_impact - WHEEL_RADIUS).clamp(0.0, SUSPENSION);
-        let compression = SUSPENSION - travel;
-        let at_mount = velocity.linear + velocity.angular.cross(r);
-        let spring = suspension_force(compression, at_mount.dot(up));
-        let mut wheel_force = up * spring;
-
-        // Au point mort, les roues AV ne doivent pas exercer un couple de lacet
-        // quand le joueur ne fait que braquer à l'arrêt.
-        let stationary = forward_speed.abs() < 0.65 && gas.abs() < 0.01;
-        let angle = if i < 2 && !stationary { steer_angle } else { 0.0 };
-        let rotation = Quat::from_axis_angle(up, angle);
-        let heading = rotation * forward;
-        let side = rotation * right;
-        // Le pneu s'oppose à la glissade latérale, mais garde assez de souplesse
-        // pour rester contrôlable en traversant les bosses.
-        wheel_force -= side * (at_mount.dot(side) * 1_650.0).clamp(-4_600.0, 4_600.0);
-        wheel_force -= heading * at_mount.dot(heading)
-            * if braking { 1_950.0 } else { 22.0 };
-
-        if gas.abs() > 0.01
-            && (forward_speed.abs() < max_speed || forward_speed.signum() != gas.signum())
-        {
-            wheel_force += heading * gas * engine;
-        }
-
-        force += wheel_force;
-        // Forces appliquées à la position de la roue, et non au centre du châssis.
-        torque += r.cross(wheel_force);
-    }
-    state.grounded_wheels = contacts;
-    if contacts > 0 {
-        // Assistance faible ; on privilégie les forces de pneus au pivot forcé.
-        if forward_speed.abs() > 0.65 {
-            torque += up * steer * forward_speed.clamp(-8.0, 8.0) * 110.0;
-        }
-        torque -= velocity.angular * 290.0;
-    }
-    external.force = force;
-    external.torque = torque;
-}
-
-// La position des roues affichées suit le vrai débattement raycast.
-// Avant, elles restaient fixes à 34 cm sous le point d'attache et semblaient
-// flotter dans le vide pendant que le châssis reposait sur ses ressorts.
-fn animate_wheels(
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    context: ReadRapierContext,
-    cars: Query<(Entity, &Transform, &Velocity), With<Truck>>,
-    mut visual: ResMut<VehicleVisualState>,
-    mut nodes: Query<(&Name, &mut Transform), Without<Truck>>,
-) {
-    let Ok(rapier) = context.single() else { return; };
-    let Ok((car_entity, car, velocity)) = cars.single() else { return; };
-    let forward = car.rotation * Vec3::Z;
-    let up = car.rotation * Vec3::Y;
-    let speed = velocity.linear.dot(forward);
-    let steer = steering_input(&keys);
-    visual.steer = steer * 0.43 / (1.0 + speed.abs() * 0.065);
-    visual.spin = (visual.spin + (speed / WHEEL_RADIUS) * time.delta_secs())
-        .rem_euclid(TAU);
-    for (i, mount) in MOUNTS.iter().enumerate() {
-        let origin = car.translation + car.rotation * *mount;
-        visual.travels[i] = rapier.cast_ray_and_get_normal(
-            origin, -up, SUSPENSION + WHEEL_RADIUS, true,
-            QueryFilter::default().exclude_rigid_body(car_entity),
-        ).filter(|(_, hit)| hit.normal.dot(Vec3::Y) >= 0.42)
-            .map(|(_, hit)| (hit.time_of_impact - WHEEL_RADIUS).clamp(0.0, SUSPENSION))
-            .unwrap_or(SUSPENSION);
-    }
-    // L'importeur glTF instancie les entités nommées après le chargement de la
-    // scène. Chaque pivot reste local à son parent, et sa roue suit la physique.
-    // Le modèle a été retourné autour de Y, d'où le miroir gauche/droite.
-    for (name, mut transform) in &mut nodes {
-        let n = name.as_str();
-        let wheel = match n {
-            "Suspension_FL" | "Steer_FL" | "WheelSpin_FL" => Some(1),
-            "Suspension_FR" | "Steer_FR" | "WheelSpin_FR" => Some(0),
-            "Suspension_RL" | "WheelSpin_RL" => Some(3),
-            "Suspension_RR" | "WheelSpin_RR" => Some(2),
-            _ => None,
-        };
-        let Some(index) = wheel else { continue };
-        if n.starts_with("Suspension_") {
-            // 0.78 = base locale (.56) + débattement au repos (.22).
-            transform.translation.y = 0.78 - visual.travels[index];
-        } else if n.starts_with("Steer_") {
-            transform.rotation = Quat::from_rotation_y(visual.steer);
-        } else if n.starts_with("WheelSpin_") {
-            transform.rotation = Quat::from_rotation_x(visual.spin);
-        }
-    }
-}
 
 fn objective(mut state: ResMut<GameState>, cars: Query<&Transform, With<Truck>>) {
     if state.reached_refuge { return; }
@@ -630,6 +475,7 @@ fn objective(mut state: ResMut<GameState>, cars: Query<&Transform, With<Truck>>)
 // la suspension et le véhicule sur le terrain, même en conduisant.
 fn camera_follow(
     time: Res<Time>,
+    capture: Res<UiInputCapture>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
@@ -643,12 +489,12 @@ fn camera_follow(
         else { return; };
 
     // C recentre derrière le 4x4 et restaure la distance de conduite.
-    if keys.just_pressed(KeyCode::KeyC) {
+    if !capture.keyboard && keys.just_pressed(KeyCode::KeyC) {
         orbit.yaw_offset = 0.0;
         orbit.pitch = 0.40;
         orbit.distance = 10.0;
     }
-    if mouse_buttons.pressed(MouseButton::Right) {
+    if !capture.pointer && mouse_buttons.pressed(MouseButton::Right) {
         orbit.yaw_offset = (orbit.yaw_offset - mouse_motion.delta.x * ORBIT_SENSITIVITY)
             .rem_euclid(TAU);
         orbit.pitch = (orbit.pitch + mouse_motion.delta.y * ORBIT_SENSITIVITY)
@@ -660,7 +506,7 @@ fn camera_follow(
         MouseScrollUnit::Line => mouse_scroll.delta.y,
         MouseScrollUnit::Pixel => mouse_scroll.delta.y * 0.025,
     };
-    if scroll_lines.abs() > f32::EPSILON {
+    if !capture.pointer && scroll_lines.abs() > f32::EPSILON {
         orbit.distance = (orbit.distance * (-scroll_lines * 0.12).exp())
             .clamp(CAMERA_MIN_DISTANCE, CAMERA_MAX_DISTANCE);
     }
@@ -721,7 +567,7 @@ fn display_hud(
         "MOTOR TRAIL  |  {:.0} km/h  |  {:.0} FPS  |  Roues au sol: {wheels_on_ground}/4\n{mission}\n\
         Z/W avancer  S reculer  Q/A gauche  D droite  Espace frein\n\
         Clic droit + souris : camera  |  Molette : zoom  |  C : arriere\n\
-        L : gamme {range}  R : recommencer  Echap : quitter",
+        L : gamme {range}  R : recommencer  ² : atelier  Echap : quitter",
         speed.linear.length() * 3.6,
         frames.smooth_fps,
     );
@@ -730,6 +576,436 @@ fn display_hud(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+
+    fn vehicle_test_app(slope: Quat) -> App {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            VehiclePlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 120.0)))
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<GameState>()
+        ;
+        let normal = slope * Vec3::Y;
+        app.world_mut().spawn((
+            RigidBody::Fixed,
+            Collider::cuboid(40.0, 0.5, 40.0),
+            Transform::from_translation(-normal * 0.5).with_rotation(slope),
+        ));
+        app.world_mut().spawn((
+            vehicle::controller::chassis_bundle(&VehiclePhysicsConfig::baseline()),
+            Transform::from_translation(normal * 1.06).with_rotation(slope),
+        ));
+        app.world_mut().spawn((Name::new("WheelSpin_FL"), Transform::default()));
+        app
+    }
+
+    fn advance_vehicle(app: &mut App, steps: usize) {
+        for _ in 0..steps {
+            app.update();
+        }
+    }
+
+    fn truck_position(app: &mut App) -> Vec3 {
+        app.world_mut().query_filtered::<&Transform, With<Truck>>()
+            .single(app.world()).unwrap().translation
+    }
+
+    fn truck_velocity(app: &mut App) -> Velocity {
+        *app.world_mut().query_filtered::<&Velocity, With<Truck>>()
+            .single(app.world()).unwrap()
+    }
+
+    fn truck_mass(app: &mut App) -> f32 {
+        let handle = *app.world_mut().query_filtered::<&RapierRigidBodyHandle, With<Truck>>()
+            .single(app.world()).unwrap();
+        app.world_mut().query::<&RapierRigidBodySet>()
+            .single(app.world()).unwrap().bodies[handle.0].mass()
+    }
+
+    #[test]
+    fn live_mass_and_center_of_mass_update_the_rigid_body() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        assert!((truck_mass(&mut app) - 1_800.0).abs() < 0.1);
+        {
+            let mut config = app.world_mut().resource_mut::<VehiclePhysicsConfig>();
+            config.chassis.mass_kg = 2_400.0;
+            config.chassis.center_of_mass = [0.15, -0.30, 0.10];
+        }
+        advance_vehicle(&mut app, 2);
+        assert!((truck_mass(&mut app) - 2_400.0).abs() < 0.1);
+        let handle = *app.world_mut().query_filtered::<&RapierRigidBodyHandle, With<Truck>>()
+            .single(app.world()).unwrap();
+        let body_set = app.world_mut().query::<&RapierRigidBodySet>().single(app.world()).unwrap();
+        let body = &body_set.bodies[handle.0];
+        let local_com = body.position().inverse_transform_point(body.center_of_mass());
+        assert!(local_com.distance(Vec3::new(0.15, -0.30, 0.10)) < 0.001);
+    }
+
+    #[test]
+    fn softer_live_springs_change_the_static_ride_height() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 600);
+        let baseline = truck_position(&mut app).y;
+        {
+            let mut config = app.world_mut().resource_mut::<VehiclePhysicsConfig>();
+            config.front.stiffness_n_per_m = 22_000.0;
+            config.rear.stiffness_n_per_m = 22_000.0;
+        }
+        advance_vehicle(&mut app, 600);
+        assert!(baseline - truck_position(&mut app).y > 0.08);
+        assert!(truck_velocity(&mut app).linear.length() < 0.05);
+    }
+
+    #[test]
+    fn engine_force_adjustment_changes_acceleration() {
+        let speed_after_launch = |force| {
+            let mut app = vehicle_test_app(Quat::IDENTITY);
+            app.world_mut().resource_mut::<VehiclePhysicsConfig>().drivetrain.engine_force_n = force;
+            advance_vehicle(&mut app, 360);
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+            advance_vehicle(&mut app, 120);
+            truck_velocity(&mut app).linear.z
+        };
+        assert!(speed_after_launch(10_000.0) > speed_after_launch(5_000.0) * 1.5);
+    }
+
+    #[test]
+    fn switching_controller_models_does_not_accumulate_forces() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        *app.world_mut().resource_mut::<VehiclePhysicsConfig>() = VehiclePhysicsConfig::original();
+        advance_vehicle(&mut app, 360);
+        assert!(app.world().resource::<VehiclePhysics>().controller.is_none());
+        assert!(truck_velocity(&mut app).linear.length() < 0.10);
+        *app.world_mut().resource_mut::<VehiclePhysicsConfig>() = VehiclePhysicsConfig::baseline();
+        advance_vehicle(&mut app, 600);
+        assert!(app.world().resource::<VehiclePhysics>().controller.is_some());
+        assert!((truck_mass(&mut app) - 1_800.0).abs() < 0.1);
+        assert!(truck_velocity(&mut app).linear.length() < 0.05);
+    }
+
+    #[test]
+    fn wheel_rotation_does_not_include_hill_hold_compensation() {
+        let mut app = vehicle_test_app(Quat::from_rotation_x(20.0_f32.to_radians()));
+        advance_vehicle(&mut app, 600);
+        let spins = app.world().resource::<VehicleVisualState>().spins;
+        advance_vehicle(&mut app, 600);
+        assert_eq!(app.world().resource::<VehicleVisualState>().spins, spins);
+    }
+
+    #[test]
+    fn rolling_resistance_cannot_command_reverse_thrust_during_a_forward_launch() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.world_mut().resource_mut::<VehiclePhysicsConfig>().drivetrain.throttle_response_hz = 0.2;
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        for _ in 0..24 {
+            app.update();
+            let physics = app.world().resource::<VehiclePhysics>();
+            assert!(physics.controller.as_ref().unwrap().wheels().iter().all(|wheel| wheel.engine_force >= 0.0));
+        }
+    }
+
+    #[test]
+    fn releasing_throttle_applies_engine_braking_without_waiting_for_response_decay() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        {
+            let mut config = app.world_mut().resource_mut::<VehiclePhysicsConfig>();
+            config.drivetrain.throttle_response_hz = 0.2;
+            config.drivetrain.engine_brake_force_n = 8_000.0;
+        }
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 60);
+        app.world_mut().query_filtered::<&mut Velocity, With<Truck>>()
+            .single_mut(app.world_mut()).unwrap().linear.z = 3.0;
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(KeyCode::KeyW);
+        advance_vehicle(&mut app, 2);
+        let physics = app.world().resource::<VehiclePhysics>();
+        let forward_impulse: f32 = physics.controller.as_ref().unwrap().wheels().iter().map(|wheel| wheel.forward_impulse).sum();
+        assert!(forward_impulse < 0.0, "engine braking must oppose motion, impulse: {forward_impulse}");
+    }
+
+    #[test]
+    fn straight_line_tire_impulses_respect_the_actual_normal_load() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.world_mut().resource_mut::<VehiclePhysicsConfig>().tires.grip_coefficient = 0.05;
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 60);
+        let physics = app.world().resource::<VehiclePhysics>();
+        for wheel in physics.controller.as_ref().unwrap().wheels() {
+            let impulse = Vec2::new(wheel.forward_impulse, wheel.side_impulse).length();
+            let limit = wheel.wheel_suspension_force.min(wheel.max_suspension_force)
+                * wheel.friction_slip * vehicle::controller::PHYSICS_DT;
+            assert!(impulse <= limit + 0.0001, "tire impulse {impulse} exceeds load-based limit {limit}");
+        }
+    }
+
+    #[test]
+    fn the_slowest_valid_throttle_response_still_eventually_accelerates() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.world_mut().resource_mut::<VehiclePhysicsConfig>().drivetrain.throttle_response_hz = 0.1;
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 240);
+        assert!(truck_velocity(&mut app).linear.z > 0.25);
+    }
+
+    #[test]
+    fn low_grip_changes_straight_line_acceleration() {
+        let launch_speed = |grip| {
+            let mut app = vehicle_test_app(Quat::IDENTITY);
+            app.world_mut().resource_mut::<VehiclePhysicsConfig>().tires.grip_coefficient = grip;
+            advance_vehicle(&mut app, 360);
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+            advance_vehicle(&mut app, 120);
+            truck_velocity(&mut app).linear.z
+        };
+        assert!(launch_speed(1.35) > launch_speed(0.05) * 2.0);
+    }
+
+    #[test]
+    fn parking_assistance_cannot_hold_a_slope_beyond_available_grip() {
+        let slope = Quat::from_rotation_x(8.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        app.world_mut().resource_mut::<VehiclePhysicsConfig>().tires.grip_coefficient = 0.05;
+        advance_vehicle(&mut app, 240);
+        let start = truck_position(&mut app);
+        advance_vehicle(&mut app, 240);
+        assert!((truck_position(&mut app) - start).dot(slope * Vec3::Z).abs() > 0.25);
+    }
+
+    #[test]
+    fn parking_assistance_stays_active_when_brake_overrides_throttle() {
+        let slope = Quat::from_rotation_x(8.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        advance_vehicle(&mut app, 360);
+        let start = truck_position(&mut app);
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::Space);
+        }
+        advance_vehicle(&mut app, 600);
+        let drift = (truck_position(&mut app) - start).dot(slope * Vec3::Z).abs();
+        assert!(drift < 0.02, "brake and throttle parking drift: {drift:.6} m, velocity: {:?}", truck_velocity(&mut app));
+    }
+
+    #[test]
+    fn slow_low_grip_sliding_is_not_hidden_by_sleeping() {
+        let slope = Quat::from_rotation_x(3.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        app.world_mut().resource_mut::<VehiclePhysicsConfig>().tires.grip_coefficient = 0.05;
+        advance_vehicle(&mut app, 600);
+        let start = truck_position(&mut app);
+        advance_vehicle(&mut app, 360);
+        let drift = (truck_position(&mut app) - start).dot(slope * Vec3::Z).abs();
+        assert!(drift > 0.05, "insufficient grip must keep sliding slowly: {drift:.3} m");
+    }
+
+    #[test]
+    fn driving_is_consistent_at_30_and_144_render_frames_per_second() {
+        let drive_at_fps = |fps: usize| {
+            let mut app = vehicle_test_app(Quat::IDENTITY);
+            *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
+                TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / fps as f64));
+            advance_vehicle(&mut app, fps * 3);
+            let start = truck_position(&mut app);
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+            advance_vehicle(&mut app, fps * 2);
+            ((truck_position(&mut app) - start).z, truck_velocity(&mut app).linear.z)
+        };
+        let slow = drive_at_fps(30);
+        let fast = drive_at_fps(144);
+        assert!((slow.0 - fast.0).abs() < 0.10, "distance depends on rendering FPS: {slow:?} vs {fast:?}");
+        assert!((slow.1 - fast.1).abs() < 0.10, "speed depends on rendering FPS: {slow:?} vs {fast:?}");
+    }
+
+    #[test]
+    fn resetting_does_not_report_a_fictitious_acceleration() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.add_message::<AppExit>().add_systems(Update, controls);
+        advance_vehicle(&mut app, 360);
+        app.world_mut().query_filtered::<&mut Velocity, With<Truck>>()
+            .single_mut(app.world_mut()).unwrap().linear.z = 3.0;
+        advance_vehicle(&mut app, 2);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyR);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::KeyR);
+            keys.clear();
+        }
+        advance_vehicle(&mut app, 1);
+        assert!(app.world().resource::<vehicle::telemetry::VehicleTelemetry>()
+            .longitudinal_acceleration_mps2.abs() < 0.1);
+    }
+
+    #[test]
+    fn stationary_wheels_do_not_keep_spinning() {
+        let mut app = vehicle_test_app(Quat::from_rotation_z(8.0_f32.to_radians()));
+        advance_vehicle(&mut app, 360);
+        let spins = app.world().resource::<VehicleVisualState>().spins;
+        advance_vehicle(&mut app, 600);
+        assert_eq!(app.world().resource::<VehicleVisualState>().spins, spins);
+    }
+
+    #[test]
+    fn steering_at_rest_does_not_turn_the_chassis() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        let start = truck_position(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyD);
+        advance_vehicle(&mut app, 240);
+        let transform = *app.world_mut().query_filtered::<&Transform, With<Truck>>()
+            .single(app.world()).unwrap();
+        assert!((transform.translation - start).length() < 0.02, "steering displacement: {:?}, velocity: {:?}, rotation: {:?}", transform.translation - start, truck_velocity(&mut app), transform.rotation);
+        assert!((transform.rotation * Vec3::Z).x.abs() < 0.01);
+        assert!(app.world().resource::<VehicleVisualState>().steer < -0.40);
+    }
+
+    #[test]
+    fn reverse_can_wake_a_vehicle_at_rest() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 600);
+        let start = truck_position(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyS);
+        advance_vehicle(&mut app, 120);
+        assert!(truck_position(&mut app).z < start.z - 0.5);
+        assert!(truck_velocity(&mut app).linear.z < -0.5);
+    }
+
+    #[test]
+    fn brakes_override_throttle_and_stop_the_vehicle() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 180);
+        assert!(truck_velocity(&mut app).linear.z > 2.0);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::Space);
+        advance_vehicle(&mut app, 240);
+        let velocity = truck_velocity(&mut app);
+        assert!(velocity.linear.length() < 0.10, "braking velocity: {:?}", velocity.linear);
+    }
+
+    #[test]
+    fn low_range_can_start_uphill() {
+        let slope = Quat::from_rotation_x(-15.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        advance_vehicle(&mut app, 360);
+        let start = truck_position(&mut app);
+        app.world_mut().resource_mut::<GameState>().low_range = true;
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 120);
+        let distance = (truck_position(&mut app) - start).dot(slope * Vec3::Z);
+        assert!(distance > 0.5, "uphill progress: {distance:.3} m");
+        assert!(app.world().resource::<GameState>().grounded_wheels >= 3);
+    }
+
+    #[test]
+    fn unloaded_wheels_do_not_spin_from_chassis_motion() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        let mut query = app.world_mut().query_filtered::<(&mut Transform, &mut Velocity), With<Truck>>();
+        let (mut transform, mut velocity) = query.single_mut(app.world_mut()).unwrap();
+        transform.translation.y = 8.0;
+        velocity.linear.z = 3.0;
+        advance_vehicle(&mut app, 24);
+        assert_eq!(app.world().resource::<VehicleVisualState>().spins, [0.0; 4]);
+        assert_eq!(app.world().resource::<GameState>().grounded_wheels, 0);
+    }
+
+    #[test]
+    fn vehicle_settles_on_the_actual_starting_terrain() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        let floor = app.world_mut().query_filtered::<Entity, (With<Collider>, Without<Truck>)>()
+            .single(app.world()).unwrap();
+        app.world_mut().entity_mut(floor).insert((ground().1, Transform::IDENTITY));
+        let x = road_x(START);
+        let mut query = app.world_mut().query_filtered::<&mut Transform, With<Truck>>();
+        query.single_mut(app.world_mut()).unwrap().translation = Vec3::new(x, height(x, START) + 1.06, START);
+        advance_vehicle(&mut app, 600);
+        let start = truck_position(&mut app);
+        advance_vehicle(&mut app, 600);
+        let drift = (truck_position(&mut app) - start).length();
+        assert!(drift < 0.10, "starting terrain drift: {drift:.3} m");
+        assert_eq!(app.world().resource::<GameState>().grounded_wheels, 4);
+        let velocity = truck_velocity(&mut app);
+        assert!(velocity.linear.length() < 0.05, "terrain residual velocity: {velocity:?}");
+    }
+
+    #[test]
+    fn driving_across_a_gentle_slope_keeps_lateral_grip() {
+        let slope = Quat::from_rotation_z(8.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        advance_vehicle(&mut app, 360);
+        let start = truck_position(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 360);
+        let displacement = truck_position(&mut app) - start;
+        assert!(displacement.dot(slope * Vec3::Z) > 5.0);
+        assert!(displacement.dot(slope * Vec3::X).abs() < 0.25, "lateral driving drift: {displacement:?}");
+    }
+
+    #[test]
+    fn right_turn_changes_heading_and_individual_wheel_speeds() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 180);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyD);
+        advance_vehicle(&mut app, 120);
+        let transform = *app.world_mut().query_filtered::<&Transform, With<Truck>>()
+            .single(app.world()).unwrap();
+        assert!((transform.rotation * Vec3::Z).x < -0.10);
+        let spins = app.world().resource::<VehicleVisualState>().spins;
+        assert!(Quat::from_rotation_x(spins[0]).angle_between(Quat::from_rotation_x(spins[1])) > 0.05);
+    }
+
+    #[test]
+    fn vehicle_holds_still_on_a_gentle_cross_slope() {
+        let slope = Quat::from_rotation_z(8.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        advance_vehicle(&mut app, 360);
+        let start = truck_position(&mut app);
+        advance_vehicle(&mut app, 600);
+        let drift = (truck_position(&mut app) - start).dot(slope * Vec3::X).abs();
+        assert!(drift < 0.10, "cross-slope drift: {drift:.3} m in 5 seconds");
+    }
+
+    #[test]
+    fn vehicle_holds_still_on_a_gentle_uphill_slope() {
+        let slope = Quat::from_rotation_x(8.0_f32.to_radians());
+        let mut app = vehicle_test_app(slope);
+        advance_vehicle(&mut app, 360);
+        let start = truck_position(&mut app);
+        advance_vehicle(&mut app, 600);
+        let drift = (truck_position(&mut app) - start).dot(slope * Vec3::Z).abs();
+        assert!(drift < 0.10, "uphill drift: {drift:.3} m in 5 seconds");
+    }
+
+    #[test]
+    fn wheel_rotation_rolls_forward_in_the_rotated_model() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(KeyCode::KeyW);
+        advance_vehicle(&mut app, 20);
+        let rotation = app.world_mut().query_filtered::<&Transform, Without<Truck>>()
+            .iter(app.world())
+            .find(|transform| transform.translation == Vec3::ZERO)
+            .unwrap().rotation;
+        let model_rotation = Quat::from_rotation_y(std::f32::consts::PI);
+        let bottom_motion = model_rotation * (rotation * Vec3::NEG_Y - Vec3::NEG_Y);
+        assert!(bottom_motion.z < -0.001, "the bottom of a forward-rolling tire must move backward, got {bottom_motion:?}");
+    }
+
     #[test]
     fn refuge_is_higher_than_start() {
         assert!(height(road_x(FINISH), FINISH) > height(road_x(START), START) + 12.0);
@@ -744,16 +1020,19 @@ mod tests {
     #[test]
     fn vehicle_static_sag_is_plausible() {
         // La roue doit toucher le sol, et le corps du 4x4 ne doit pas flotter.
-        let compression = CAR_MASS * 9.81 / (4.0 * SPRING_STIFFNESS);
-        let wheel_drop = SUSPENSION - compression;
-        let chassis_height = 0.22 + WHEEL_RADIUS + wheel_drop;
+        let config = VehiclePhysicsConfig::baseline();
+        let compression = config.chassis.mass_kg * 9.81 / (4.0 * config.front.stiffness_n_per_m);
+        let wheel_drop = config.front.rest_length_m - compression;
+        let chassis_height = 0.22 + config.tires.radius_m + wheel_drop;
         assert!(chassis_height > 0.72 && chassis_height < 1.05);
-        assert!((chassis_height - 0.22 - wheel_drop - WHEEL_RADIUS).abs() < 0.001);
+        assert!((chassis_height - 0.22 - wheel_drop - config.tires.radius_m).abs() < 0.001);
     }
     #[test]
     fn suspension_does_not_pull_vehicle_down() {
-        assert_eq!(suspension_force(0.0, 1.0), 0.0);
-        assert!(suspension_force(0.15, 0.0) > 0.0);
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        advance_vehicle(&mut app, 360);
+        let physics = app.world().resource::<VehiclePhysics>();
+        assert!(physics.controller.as_ref().unwrap().wheels().iter().all(|wheel| wheel.wheel_suspension_force >= 0.0));
     }
     #[test]
     fn motor_has_more_headroom() {

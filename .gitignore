@@ -3,3 +3,5 @@
 /.vscode
 .DS_Store
 *.log
+/configs/vehicles/.last-profile.json
+/configs/vehicles/.*.tmp
