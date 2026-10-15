@@ -1,7 +1,11 @@
+use super::wheel_backend::{
+    TireContactMode, Wheel, WheelController as DynamicRayCastVehicleController,
+};
+use super::wheel_settings::WheelContactSettings;
 use bevy::prelude::*;
 use bevy_rapier3d::parry::query::DefaultQueryDispatcher;
 use bevy_rapier3d::prelude::*;
-use bevy_rapier3d::rapier::control::{DynamicRayCastVehicleController, WheelTuning};
+use bevy_rapier3d::rapier::control::WheelTuning;
 
 use super::config::{PhysicsModel, SuspensionConfig, VehiclePhysicsConfig};
 use super::visuals::VehicleVisualState;
@@ -48,6 +52,9 @@ pub struct VehiclePhysics {
     pub error: Option<String>,
     initialized: bool,
     wake_requested: bool,
+    source_config: VehiclePhysicsConfig,
+    equipment_revision: u64,
+    active_tire_mode: TireContactMode,
 }
 
 impl Default for VehiclePhysics {
@@ -63,7 +70,26 @@ impl Default for VehiclePhysics {
             error: None,
             initialized: false,
             wake_requested: true,
+            source_config: VehiclePhysicsConfig::baseline(),
+            equipment_revision: 0,
+            active_tire_mode: TireContactMode::Native,
         }
+    }
+}
+
+impl VehiclePhysics {
+    /// Reset motion, not the last accepted profile or its equipment mass.
+    pub fn reset_motion(&mut self) {
+        self.controller = None;
+        self.wheels = std::array::from_fn(|i| WheelContact {
+            suspension_length: axle_config(&self.active_config, i).rest_length_m,
+            ..default()
+        });
+        self.throttle = 0.0;
+        self.engine_force = 0.0;
+        self.brake_force = 0.0;
+        self.sleeping = false;
+        self.wake_requested = true;
     }
 }
 
@@ -86,8 +112,9 @@ pub fn chassis_bundle(config: &VehiclePhysicsConfig) -> impl Bundle {
         Truck,
         Visibility::default(),
         RigidBody::Dynamic,
-        Collider::cuboid(1.10, 0.40, 1.92),
+        super::collision::body_collider(),
         ColliderMassProperties::MassProperties(mass_properties(config)),
+        ReadMassProperties::default(),
         Damping {
             linear_damping: config.chassis.linear_damping,
             angular_damping: config.chassis.angular_damping,
@@ -106,8 +133,25 @@ pub fn spawn_height(config: &VehiclePhysicsConfig) -> f32 {
     0.22 + config.tires.radius_m + (front + rear) * 0.5
 }
 
+pub fn effective_configuration(
+    config: &VehiclePhysicsConfig,
+    equipment: &super::equipment_runtime::EquipmentRuntime,
+) -> Result<(VehiclePhysicsConfig, MassProperties), String> {
+    config.validate()?;
+    let mass = equipment.effective_mass(mass_properties(config))?;
+    let mut effective = config.clone();
+    effective.chassis.mass_kg = mass.mass;
+    effective.chassis.center_of_mass = mass.local_center_of_mass.to_array();
+    effective
+        .validate()
+        .map_err(|error| format!("Equipements incompatibles avec le profil : {error}"))?;
+    Ok((effective, mass))
+}
+
 pub fn apply_configuration(
     config: Res<VehiclePhysicsConfig>,
+    equipment: Res<super::equipment_runtime::EquipmentRuntime>,
+    tire_settings: Res<WheelContactSettings>,
     mut physics: ResMut<VehiclePhysics>,
     mut visual: ResMut<VehicleVisualState>,
     mut cars: Query<
@@ -119,21 +163,29 @@ pub fn apply_configuration(
         With<Truck>,
     >,
 ) {
-    if physics.initialized && *config == physics.active_config {
+    if physics.initialized
+        && *config == physics.source_config
+        && equipment.revision == physics.equipment_revision
+        && tire_settings.mode() == physics.active_tire_mode
+    {
         return;
     }
-    if let Err(error) = config.validate() {
-        physics.error = Some(error);
-        return;
-    }
+    let (effective_config, effective_mass) = match effective_configuration(&config, &equipment) {
+        Ok(result) => result,
+        Err(error) => {
+            physics.error = Some(error);
+            return;
+        }
+    };
     let Ok((mut mass, mut damping, mut force)) = cars.single_mut() else {
         return;
     };
-    let geometry_changed = config.model != physics.active_config.model
+    let geometry_changed = tire_settings.mode() != physics.active_tire_mode
+        || config.model != physics.active_config.model
         || config.tires.radius_m != physics.active_config.tires.radius_m
         || config.front.rest_length_m != physics.active_config.front.rest_length_m
         || config.rear.rest_length_m != physics.active_config.rear.rest_length_m;
-    *mass = ColliderMassProperties::MassProperties(mass_properties(&config));
+    *mass = ColliderMassProperties::MassProperties(effective_mass);
     *damping = Damping {
         linear_damping: config.chassis.linear_damping,
         angular_damping: config.chassis.angular_damping,
@@ -143,7 +195,10 @@ pub fn apply_configuration(
         physics.controller = None;
         visual.previous_hubs = [None; 4];
     }
-    physics.active_config = config.clone();
+    physics.source_config = config.clone();
+    physics.active_config = effective_config;
+    physics.equipment_revision = equipment.revision;
+    physics.active_tire_mode = tire_settings.mode();
     physics.initialized = true;
     physics.wake_requested = true;
     physics.error = None;
@@ -178,8 +233,9 @@ fn tune_controller(
 fn new_controller(
     handle: RapierRigidBodyHandle,
     config: &VehiclePhysicsConfig,
+    mode: TireContactMode,
 ) -> DynamicRayCastVehicleController {
-    let mut controller = DynamicRayCastVehicleController::new(handle.0);
+    let mut controller = DynamicRayCastVehicleController::new(handle.0, mode);
     controller.index_forward_axis = 2;
     for (i, mount) in MOUNTS.into_iter().enumerate() {
         controller.add_wheel(
@@ -322,12 +378,10 @@ pub fn suspension_and_drive(
             &mut physics,
         );
     } else {
-        if physics
-            .controller
-            .as_ref()
-            .is_none_or(|controller| controller.chassis != handle.0)
-        {
-            physics.controller = Some(new_controller(*handle, &config));
+        if physics.controller.as_ref().is_none_or(|controller| {
+            controller.chassis != handle.0 || controller.contact_mode() != physics.active_tire_mode
+        }) {
+            physics.controller = Some(new_controller(*handle, &config, physics.active_tire_mode));
         }
         let mut controller = physics.controller.take().unwrap();
         tune_controller(&mut controller, &config);
@@ -428,13 +482,13 @@ pub fn suspension_and_drive(
     }
 }
 
-fn tire_axes(wheel: &bevy_rapier3d::rapier::control::Wheel) -> (Vec3, Vec3) {
+fn tire_axes(wheel: &Wheel) -> (Vec3, Vec3) {
     let normal = wheel.raycast_info().contact_normal_ws;
     let axle = (wheel.axle() - normal * wheel.axle().dot(normal)).normalize_or_zero();
     (normal.cross(axle).normalize_or_zero(), axle)
 }
 
-fn tire_impulse_limit(wheel: &bevy_rapier3d::rapier::control::Wheel) -> f32 {
+fn tire_impulse_limit(wheel: &Wheel) -> f32 {
     wheel.wheel_suspension_force.min(wheel.max_suspension_force) * wheel.friction_slip * PHYSICS_DT
 }
 
@@ -446,7 +500,7 @@ fn parking_gravity_dt(solver_substeps: usize) -> f32 {
 
 fn apply_tire_correction(
     body: &mut bevy_rapier3d::rapier::dynamics::RigidBody,
-    wheel: &bevy_rapier3d::rapier::control::Wheel,
+    wheel: &Wheel,
     correction: Vec2,
 ) {
     let point = wheel.raycast_info().contact_point_ws;

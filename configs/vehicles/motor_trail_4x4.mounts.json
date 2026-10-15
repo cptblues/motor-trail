@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "vehicle_id": "motor_trail_4x4",
+  "mounts": [
+    {
+      "id": "roof_main",
+      "category": "roof",
+      "local_pose": {
+        "translation": [0.0, 1.240, -0.420],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "max_mass_kg": 150.0,
+      "allowed_equipment_types": ["cargo", "light"],
+      "occupied_zones": ["roof"],
+      "conflicting_zones": []
+    },
+    {
+      "id": "front_winch",
+      "category": "front",
+      "local_pose": {
+        "translation": [0.0, -0.087, 2.143],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "max_mass_kg": 80.0,
+      "allowed_equipment_types": ["winch"],
+      "occupied_zones": ["front"],
+      "conflicting_zones": []
+    },
+    {
+      "id": "rear_spare_wheel",
+      "category": "rear",
+      "local_pose": {
+        "translation": [0.0, 0.390, -2.070],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "max_mass_kg": 100.0,
+      "allowed_equipment_types": ["spare_wheel", "cargo"],
+      "occupied_zones": ["rear"],
+      "conflicting_zones": []
+    },
+    {
+      "id": "left_accessory",
+      "category": "left_side",
+      "local_pose": {
+        "translation": [-0.988, -0.099, -0.190],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "max_mass_kg": 35.0,
+      "allowed_equipment_types": ["tool", "cargo"],
+      "occupied_zones": ["left_side"],
+      "conflicting_zones": []
+    },
+    {
+      "id": "right_accessory",
+      "category": "right_side",
+      "local_pose": {
+        "translation": [0.988, -0.099, -0.190],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "max_mass_kg": 35.0,
+      "allowed_equipment_types": ["tool", "cargo"],
+      "occupied_zones": ["right_side"],
+      "conflicting_zones": []
+    }
+  ]
+}

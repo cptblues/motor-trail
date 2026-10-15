@@ -1,4 +1,4 @@
-//! Optional wheel-envelope overlay; does not modify vehicle configuration or forces.
+//! Optional body, equipment and wheel overlay; never changes physics or profiles.
 use super::controller::{MOUNTS, Truck, VehiclePhysics};
 use crate::ui::UiInputCapture;
 use bevy::gizmos::config::GizmoConfigGroup;
@@ -16,11 +16,19 @@ pub struct WheelDiagnosticsPlugin;
 #[derive(Default, Reflect, GizmoConfigGroup)]
 struct WheelGizmos;
 
+#[derive(Resource, Default)]
+struct EquipmentOverlay {
+    revision: Option<u64>,
+    colliders: Vec<(Transform, Collider)>,
+    mounts: Vec<Transform>,
+}
+
 impl Plugin for WheelDiagnosticsPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(WheelDiagnostics {
             enabled: std::env::args_os().any(|arg| arg == "--wheel-diagnostics"),
         })
+        .init_resource::<EquipmentOverlay>()
         .init_gizmo_group::<WheelGizmos>()
         .add_plugins(probe::WheelContactProbePlugin)
         .add_plugins(RapierDebugRenderPlugin {
@@ -31,7 +39,7 @@ impl Plugin for WheelDiagnosticsPlugin {
         })
         .add_systems(
             Update,
-            (toggle, configure_colliders)
+            (toggle, configure_colliders, refresh_equipment)
                 .chain()
                 .before(crate::controls),
         )
@@ -44,6 +52,41 @@ impl Plugin for WheelDiagnosticsPlugin {
         config.depth_bias = -1.0;
         config.line.width = 1.5;
     }
+}
+
+fn refresh_equipment(
+    state: Res<WheelDiagnostics>,
+    runtime: Res<super::equipment_runtime::EquipmentRuntime>,
+    mut overlay: ResMut<EquipmentOverlay>,
+) {
+    if !state.enabled || overlay.revision == Some(runtime.revision) {
+        return;
+    }
+    let active = runtime.active();
+    let Ok(installed) =
+        super::equipment::resolve_loadout(&active.mounts, &active.catalog, &active.loadout)
+    else {
+        return;
+    };
+    overlay.colliders.clear();
+    overlay.mounts.clear();
+    for item in installed {
+        if item.mode != super::equipment::EquipmentMode::Rigid {
+            continue;
+        }
+        for part in item.colliders {
+            overlay.colliders.push((
+                item.local_transform.mul_transform(part.local_transform),
+                part.collider,
+            ));
+        }
+    }
+    for mount in &active.mounts.mounts {
+        if let Ok(pose) = mount.local_pose.transform() {
+            overlay.mounts.push(pose);
+        }
+    }
+    overlay.revision = Some(runtime.revision);
 }
 
 fn toggle(
@@ -78,16 +121,60 @@ fn configure_colliders(
 fn draw(
     state: Res<WheelDiagnostics>,
     physics: Res<VehiclePhysics>,
-    cars: Query<(Entity, &Transform), With<Truck>>,
+    equipment: Res<EquipmentOverlay>,
+    cars: Query<(Entity, &Transform, Option<&ReadMassProperties>), With<Truck>>,
     context: ReadRapierContext,
     mut gizmos: Gizmos<WheelGizmos>,
 ) {
     if !state.enabled {
         return;
     }
-    let Ok((entity, car)) = cars.single() else {
+    let Ok((entity, car, mass)) = cars.single() else {
         return;
     };
+    for part in super::collision::body_parts() {
+        let color = match part.region {
+            super::collision::BodyRegion::Chassis => Color::srgb(1.0, 0.22, 0.18),
+            super::collision::BodyRegion::Body => Color::srgb(0.25, 0.55, 1.0),
+            super::collision::BodyRegion::Roof => Color::srgb(1.0, 0.90, 0.12),
+            super::collision::BodyRegion::Bumper => Color::srgb(1.0, 0.50, 0.10),
+            super::collision::BodyRegion::Accessory => Color::srgb(0.9, 0.4, 1.0),
+        };
+        wire_shape(
+            &mut gizmos,
+            part.collider.raw.as_ref(),
+            car.mul_transform(part.local_transform),
+            color,
+        );
+    }
+    for (local, collider) in &equipment.colliders {
+        wire_shape(
+            &mut gizmos,
+            collider.raw.as_ref(),
+            car.mul_transform(*local),
+            Color::srgb(1.0, 0.0, 0.85),
+        );
+    }
+    for local in &equipment.mounts {
+        let pose = car.mul_transform(*local);
+        for (axis, color) in [
+            (Vec3::X, Color::srgb(1.0, 0.2, 0.2)),
+            (Vec3::Y, Color::srgb(0.2, 1.0, 0.3)),
+            (Vec3::Z, Color::srgb(0.2, 0.5, 1.0)),
+        ] {
+            gizmos.arrow(pose.translation, pose.transform_point(axis * 0.28), color);
+        }
+    }
+    let local_com = mass
+        .map(|mass| mass.local_center_of_mass)
+        .unwrap_or(Vec3::from_array(
+            physics.active_config.chassis.center_of_mass,
+        ));
+    gizmos.sphere(
+        Isometry3d::from_translation(car.transform_point(local_com)),
+        0.09,
+        Color::srgb(1.0, 0.2, 0.75),
+    );
     let radius = physics.active_config.tires.radius_m;
     let half_width =
         super::contacts::MODEL_TIRE_HALF_WIDTH * radius / super::controller::MODEL_WHEEL_RADIUS;
@@ -165,6 +252,72 @@ fn draw(
                 let center = geometry.ray_start + car.rotation * Vec3::NEG_Y * candidate.length;
                 gizmos.cross(center, 0.045, Color::srgb(0.5, 1.0, 0.1));
             }
+        }
+    }
+}
+
+fn wire_shape(
+    gizmos: &mut Gizmos<WheelGizmos>,
+    shape: &dyn bevy_rapier3d::parry::shape::Shape,
+    pose: Transform,
+    color: Color,
+) {
+    use bevy_rapier3d::parry::shape::TypedShape;
+    match shape.as_typed_shape() {
+        TypedShape::Cuboid(cuboid) => {
+            gizmos.cube(pose.with_scale(cuboid.half_extents * 2.0), color);
+        }
+        TypedShape::ConvexPolyhedron(polyhedron) => {
+            for edge in polyhedron.edges() {
+                let [a, b] = edge.vertices;
+                gizmos.line(
+                    pose.transform_point(polyhedron.points()[a as usize]),
+                    pose.transform_point(polyhedron.points()[b as usize]),
+                    color,
+                );
+            }
+        }
+        TypedShape::Cylinder(cylinder) => {
+            let rotation = pose.rotation * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+            for side in [-1.0, 1.0] {
+                gizmos.circle(
+                    Isometry3d::new(
+                        pose.transform_point(Vec3::Y * cylinder.half_height * side),
+                        rotation,
+                    ),
+                    cylinder.radius,
+                    color,
+                );
+            }
+            for radial in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z] {
+                gizmos.line(
+                    pose.transform_point(radial * cylinder.radius + Vec3::Y * cylinder.half_height),
+                    pose.transform_point(radial * cylinder.radius - Vec3::Y * cylinder.half_height),
+                    color,
+                );
+            }
+        }
+        TypedShape::Ball(ball) => {
+            gizmos.sphere(
+                Isometry3d::new(pose.translation, pose.rotation),
+                ball.radius,
+                color,
+            );
+        }
+        TypedShape::Compound(compound) => {
+            for (local, child) in compound.shapes() {
+                let local =
+                    Transform::from_translation(local.translation).with_rotation(local.rotation);
+                wire_shape(gizmos, child.as_ref(), pose.mul_transform(local), color);
+            }
+        }
+        _ => {
+            let aabb = shape.compute_local_aabb();
+            let local = Transform::from_translation((aabb.mins + aabb.maxs) * 0.5);
+            gizmos.cube(
+                pose.mul_transform(local).with_scale(aabb.maxs - aabb.mins),
+                color,
+            );
         }
     }
 }

@@ -14,7 +14,7 @@ pub const FORMAT: &str = "motor-trail-terrain";
 pub const FORMAT_VERSION: u32 = 1;
 pub const MAX_OBSTACLES: usize = 512;
 pub const SPAWN_HALF_WIDTH: f32 = 1.3;
-pub const SPAWN_HALF_DEPTH: f32 = 2.2;
+pub const SPAWN_HALF_DEPTH: f32 = 2.4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -322,6 +322,28 @@ fn course_envelope(z: f32, start: f32, plateau_start: f32, plateau_end: f32, end
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn respawn_equipment_runtime_scene_schema_stays_independent_of_installed_loadout() {
+        let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        scene.spawn.position = [29.0, 0.0, 0.0];
+        scene.validate().unwrap();
+        let config = crate::vehicle::config::VehiclePhysicsConfig::baseline();
+        let base_bounds = crate::vehicle::collision::body_bounds();
+        super::super::runtime::checked_spawn_transform(&scene, &config, base_bounds).unwrap();
+        let extended_bounds = (base_bounds.0, base_bounds.1.max(Vec3::new(4.3, 0.0, 0.0)));
+        assert!(
+            super::super::runtime::checked_spawn_transform(&scene, &config, extended_bounds)
+                .is_err()
+        );
+        let json = serde_json::to_value(&scene).unwrap();
+        assert_eq!(json["format_version"], FORMAT_VERSION);
+        assert!(json.get("equipment").is_none());
+        assert!(json.get("loadout").is_none());
+        let restored: TerrainScene = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, scene);
+        restored.validate().unwrap();
+    }
 
     #[test]
     fn small_generated_scenes_keep_the_whole_spawn_footprint_on_the_map() {

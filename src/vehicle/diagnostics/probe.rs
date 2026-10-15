@@ -1,4 +1,4 @@
-//! Native GPU/GLB probe: --wheel-contact-probe <output-directory>.
+//! GPU/GLB probe for the chosen backend: --wheel-contact-probe <output-directory>.
 use super::WheelDiagnostics;
 use crate::terrain::config::TerrainPreset;
 use crate::terrain::obstacles::{Obstacle, ObstacleKind};
@@ -9,11 +9,14 @@ use crate::terrain::scene::ReferenceScene;
 use crate::ui::UiInputCapture;
 use crate::vehicle::config::VehiclePhysicsConfig;
 use crate::vehicle::controller::{MOUNTS, Truck, VehiclePhysics};
+use crate::vehicle::wheel_backend::TireContactMode;
+use crate::vehicle::wheel_settings::WheelContactSettings;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::time::TimeUpdateStrategy;
 use bevy_rapier3d::prelude::*;
 use std::path::PathBuf;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MIN: Vec3 = Vec3::new(-2.5, 0.0, -17.25);
 const MAX: Vec3 = Vec3::new(2.5, 0.25, -13.75);
@@ -38,6 +41,10 @@ impl Plugin for WheelContactProbePlugin {
             return;
         }
         let setup = (|| -> Result<Probe, String> {
+            if std::env::args_os().any(|arg| arg == "--vehicle-body-probe") {
+                return Err("Run wheel and body probes in separate processes".into());
+            }
+            let mode = app.world().resource::<WheelContactSettings>().mode();
             let output = args
                 .next()
                 .filter(|arg| !arg.to_string_lossy().starts_with("--"))
@@ -47,11 +54,13 @@ impl Plugin for WheelContactProbePlugin {
                 .map_err(|e| e.to_string())?
                 .as_nanos();
             // A fresh subdirectory prevents previous screenshots from satisfying this run.
-            let output = PathBuf::from(output).join(format!("wheel-contact-{nonce}"));
+            let output =
+                PathBuf::from(output).join(format!("wheel-contact-{}-{nonce}", mode_name(mode)));
             std::fs::create_dir_all(&output).map_err(|e| format!("Probe output: {e}"))?;
             info!("Wheel contact probe images: {}", output.display());
             Ok(Probe {
                 output,
+                mode,
                 stage: Stage::Load,
                 started: Instant::now(),
                 elapsed: 0.0,
@@ -65,11 +74,15 @@ impl Plugin for WheelContactProbePlugin {
         })();
         match setup {
             Ok(probe) => {
-                app.insert_resource(probe).add_systems(
-                    Update,
-                    tick.after(crate::camera_follow)
-                        .after(crate::vehicle::visuals::animate_wheels),
-                );
+                app.insert_resource(probe)
+                    .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                        1.0 / 60.0,
+                    )))
+                    .add_systems(
+                        Update,
+                        tick.after(crate::camera_follow)
+                            .after(crate::vehicle::visuals::animate_wheels),
+                    );
             }
             Err(error) => {
                 app.add_systems(Startup, move |mut exit: MessageWriter<AppExit>| {
@@ -93,6 +106,7 @@ enum Stage {
 #[derive(Resource)]
 struct Probe {
     output: PathBuf,
+    mode: TireContactMode,
     stage: Stage,
     started: Instant,
     elapsed: f32,
@@ -102,6 +116,25 @@ struct Probe {
     max_penetration: f32,
     top_wheels: u8,
     captured: [bool; 4],
+}
+
+fn mode_name(mode: TireContactMode) -> &'static str {
+    match mode {
+        TireContactMode::Native => "native",
+        TireContactMode::Envelope => "envelope",
+    }
+}
+
+fn validate_penetration(mode: TireContactMode, penetration: f32) -> Result<(), String> {
+    if !penetration.is_finite() {
+        return Err("Non-finite tire penetration".into());
+    }
+    if mode == TireContactMode::Envelope && penetration >= 0.07 {
+        return Err(format!(
+            "Experimental tire penetration {penetration:.5} m must remain below 0.07 m"
+        ));
+    }
+    Ok(())
 }
 
 fn penetration(center: Vec3, radius: f32) -> f32 {
@@ -197,9 +230,32 @@ fn tick(world: &mut World) {
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .release(KeyCode::KeyW);
             info!(
-                "Wheel contact probe: native raycast (diagnosis only), max rubber penetration={:.5} m, top wheels={:04b}, stage={:?}",
-                probe.max_penetration, probe.top_wheels, probe.stage
+                "Wheel contact probe: {} ({}), max rubber penetration={:.5} m, top wheels={:04b}, stage={:?}",
+                mode_name(probe.mode),
+                if probe.mode == TireContactMode::Native {
+                    "characterization"
+                } else {
+                    "experimental acceptance"
+                },
+                probe.max_penetration,
+                probe.top_wheels,
+                probe.stage
             );
+            let report = serde_json::json!({
+                "backend": mode_name(probe.mode),
+                "acceptance_limit_m": if probe.mode == TireContactMode::Envelope { Some(0.07) } else { None },
+                "max_penetration_m": probe.max_penetration,
+                "top_wheels": probe.top_wheels,
+                "success": matches!(&result, Ok(true)),
+                "error": result.as_ref().err(),
+            });
+            let saved = serde_json::to_vec_pretty(&report)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    std::fs::write(probe.output.join("report.json"), bytes)
+                        .map_err(|e| e.to_string())
+                });
+            let result = result.and_then(|done| saved.map(|()| done));
             let exit = match result {
                 Ok(true) => AppExit::Success,
                 Err(error) => {
@@ -214,6 +270,17 @@ fn tick(world: &mut World) {
 }
 
 fn advance(world: &mut World, probe: &mut Probe) -> Result<bool, String> {
+    if world.resource::<WheelContactSettings>().mode() != probe.mode {
+        return Err("Tire contact mode changed during the probe".into());
+    }
+    if world
+        .resource::<VehiclePhysics>()
+        .controller
+        .as_ref()
+        .is_some_and(|controller| controller.contact_mode() != probe.mode)
+    {
+        return Err("The active wheel backend does not match the selected contact mode".into());
+    }
     if probe.started.elapsed().as_secs_f32() > 90.0 {
         return Err(format!(
             "90 s deadline in {:?}; captures {:?}",
@@ -290,6 +357,10 @@ fn advance(world: &mut World, probe: &mut Probe) -> Result<bool, String> {
         return Err("Workshop left Drive mode".into());
     }
     let configured = physics.active_config == *world.resource::<VehiclePhysicsConfig>();
+    let backend_ready = physics
+        .controller
+        .as_ref()
+        .is_some_and(|controller| controller.contact_mode() == probe.mode);
     lock_camera(world, &car);
     if probe.step.is_some() {
         for (i, center) in centers.iter().enumerate() {
@@ -303,6 +374,7 @@ fn advance(world: &mut World, probe: &mut Probe) -> Result<bool, String> {
                 probe.top_wheels |= 1 << i;
             }
         }
+        validate_penetration(probe.mode, probe.max_penetration)?;
     }
     match probe.stage {
         Stage::Settle => {
@@ -319,6 +391,7 @@ fn advance(world: &mut World, probe: &mut Probe) -> Result<bool, String> {
             let settled = synced
                 && configured
                 && glb_ready
+                && backend_ready
                 && wheels.iter().filter(|w| w.grounded).count() >= 3
                 && speed.linear.length() < 0.15
                 && speed.angular.length() < 0.15;
@@ -408,5 +481,14 @@ mod tests {
         assert!((penetration(center, 0.53) - 0.03).abs() < 1e-5);
         assert_eq!(penetration(Vec3::new(0.0, 0.78, -15.5), 0.53), 0.0);
         assert_eq!(penetration(Vec3::new(4.0, 0.5, -15.5), 0.53), 0.0);
+    }
+
+    #[test]
+    fn penetration_limit_is_strict_and_only_accepts_experimental_improvement() {
+        assert!(validate_penetration(TireContactMode::Native, 0.253).is_ok());
+        assert!(validate_penetration(TireContactMode::Envelope, 0.0699).is_ok());
+        assert!(validate_penetration(TireContactMode::Envelope, 0.07).is_err());
+        assert!(validate_penetration(TireContactMode::Envelope, 0.253).is_err());
+        assert!(validate_penetration(TireContactMode::Native, f32::NAN).is_err());
     }
 }
