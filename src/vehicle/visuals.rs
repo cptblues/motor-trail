@@ -42,8 +42,10 @@ pub fn update_wheel_motion(
 pub fn animate_wheels(
     physics: Res<VehiclePhysics>,
     visual: Res<VehicleVisualState>,
+    presentation: Res<super::presentation::VehiclePresentation>,
     mut nodes: Query<(&Name, &mut Transform), Without<Truck>>,
 ) {
+    let visual = presentation.wheels(&visual);
     for (name, mut transform) in &mut nodes {
         let name = name.as_str();
         let index = match name {

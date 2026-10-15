@@ -29,7 +29,7 @@ La premiere compilation du moteur peut prendre plusieurs minutes.
 | Molette | Zoom |
 | C | Recentrer la camera |
 | `²` | Ouvrir / fermer l'atelier |
-| V | Afficher / masquer le diagnostic 3D des contacts des pneus |
+| V | Diagnostic 3D : pneus, carrosserie, equipements, fixations et centre de masse |
 | Echap | Quitter |
 
 Le raccourci de l'atelier reconnait le caractere `²` et la position physique
@@ -74,9 +74,9 @@ La fenetre est deplacable et redimensionnable. Les onglets regroupent :
 | --- | --- |
 | Chassis | Masse (kg), centre de masse (m), amortissements et aide au maintien en pente |
 | Suspensions | Avant / arriere : k (N/m), compression / detente (N*s/m), repos, debattement (m) et force maximale par roue (N) |
-| Pneus | Rayon (m), limite d'adherence combinee, reponse laterale, resistance au roulement (N) et trainee (N*s/m) |
+| Pneus | Rayon (m), adherence, reponse laterale, resistance, trainee et contacts volumetriques experimentaux |
 | Moteur | Force totale (N), reponse, rapports, vitesses cibles, frein de service et frein moteur |
-| Diagnostic | FPS, frame, vitesse, acceleration, lacet, angles, contacts, compression et charge des quatre roues |
+| Diagnostic | Masse/centre de masse effectifs, backend pneus, FPS, vitesse, angles, contacts, compression et charge des roues |
 
 Les valeurs validees sont appliquees au prochain pas de physique. Une valeur
 invalide affiche une erreur et laisse la configuration active intacte.
@@ -114,23 +114,59 @@ gere ressorts, amortisseurs, traction, freinage et friction limitee par la
 charge. Il est accessible dans la version Rapier embarquee par le plugin.
 Les calculs tournent a **120 Hz**, apres la synchronisation du backend et avant
 son integration, selon le [mode a pas fixe du plugin](https://rapier.rs/docs/user_guides/bevy_plugin/integration_parameters/).
-Un seul controleur applique des forces a chaque pas. Le controleur Rapier reste
-intact : cette livraison ajoute le diagnostic et l'apercu de placement, pas
-une modification de la detection physique des roues.
+Un seul controleur applique des forces a chaque pas. Le controleur Rapier natif
+reste intact et actif par defaut. Une option de session explicitement
+experimentale permet de comparer un contact volumetrique, sans doubler les forces.
+
+### Carrosserie Et Equipements
+
+Un collider compose couvre le chassis, la cabine, le toit, les pare-chocs,
+les accessoires fixes et la roue de secours mesures sur le GLB. Il reste un
+seul corps dynamique, avec la masse et l'inertie du profil de base conservees.
+Aucune correction de redressement automatique n'est ajoutee.
+
+Les fixations versionnees dans `configs/vehicles/motor_trail_4x4.mounts.json`
+permettent des equipements rigides ou decoratifs valides, sans interface de
+personnalisation. Le prototype `cargo run --release -- --equipment-demo` ajoute
+un coffre factice de 40 kg sur le toit : sa masse, son centre de masse et son
+inertie sont combines sans modifier le profil sauvegarde. `R`, le retour en
+Conduite et le rechargement tiennent compte de son encombrement. Un depart dont
+l'enveloppe sort du terrain est refuse avec un message.
+
+Voir [Physique modulaire](docs/vehicle-physics.md) pour les schemas, filtres,
+limites et modes articules/detachables reserves a une version future.
+
+### Pneus Experimentaux
+
+Dans **Pneus**, cocher **Contacts volumetriques (experimental)**, ou lancer :
+
+```powershell
+cargo run --release -- --experimental-tires
+```
+
+Cette option est **desactivee par defaut** et n'est pas enregistree dans les
+profils JSON. Elle remplace le contact choisi avant l'unique calcul de suspension
+et de friction. Elle ne change ni le rayon, ni la position du modele.
+Le profil Origine garde son controleur historique independant.
+Les tests de marche de 25 cm mesurent environ 3-4 cm de penetration de gomme
+en mode experimental, contre environ 25 cm avec le rayon natif. Ce n'est pas
+une simulation de pneu deformable ni une garantie contre les chocs rapides.
+Les roues suspendues n'ont pas de collision laterale complete, notamment
+pendant un basculement sur le flanc ; cette limite reste documentee.
 
 ### Diagnostic 3D des pneus
 
 `V` affiche les centres physiques (blanc), le rayon et la largeur de gomme (cyan),
 les rayons descendants (rouge), les contacts utilises (orange) et les colliders
 des obstacles. Les marques vert clair montrent les contacts candidats du
-prototype de balayage volumetrique en lecture seule. Ils ne sont pas utilises
-par la suspension ou la motricite et n'appliquent aucune force.
+balayage volumetrique en lecture seule. L'affichage n'applique aucune force ;
+seule l'option experimentale distincte change les contacts utilises par le controleur.
 Les centres restent visibles a travers le modele dans ce mode de diagnostic.
 La touche est inactive pendant une saisie dans l'interface ; aucun profil n'est
 modifie. On peut aussi demarrer avec `cargo run --release -- --wheel-diagnostics`.
 Voir [Diagnostic des contacts](docs/wheel-contact-diagnosis.md) pour les mesures
-du GLB, la reproduction sur marche et la piste de correction differee. Le defaut
-de penetration des pneus reste present avec le controleur actuel.
+du GLB et la comparaison des deux methodes. Le defaut de penetration des pneus
+reste present dans le mode natif de reference.
 
 La version [Rapier 0.33-alpha embarquee](https://docs.rs/crate/rapier3d/0.33.0-alpha/source/src/control/ray_cast_vehicle_controller.rs)
 peut omettre sa limite longitudinale en ligne droite. L'adaptateur retire
@@ -194,9 +230,15 @@ src/
   terrain/                   generation, sculpture, scenes, objets et collisions
   vehicle/config.rs          parametres, unites, validation et references
   vehicle/controller.rs      Rapier / Origine et application en direct
-  vehicle/contacts.rs        requetes volumetriques de diagnostic, sans forces
-  vehicle/diagnostics.rs     centres, rayons, contacts et colliders (V)
+  vehicle/collision.rs       enveloppe composee mesuree sur le GLB
+  vehicle/contacts.rs        requetes volumetriques partagees, sans forces
+  vehicle/wheel_backend.rs   natif intact ou essai volumetrique isole
+  vehicle/mounting.rs        fixations locales versionnees
+  vehicle/equipment.rs       schemas, compatibilite et masses combinees
+  vehicle/equipment_runtime.rs  attachements rigides et application transactionnelle
+  vehicle/diagnostics.rs     centres, contacts, carrosserie et fixations (V)
   vehicle/visuals.rs          suspensions, direction et roulement du GLB
+  vehicle/presentation.rs     interpolation graphique et pose suivie par la camera
   vehicle/telemetry.rs        mesures et estimations
   ui/physics_tuning.rs        panneau, comparaison et capture des entrees
   ui/terrain_workshop.rs      atelier terrain et commandes d'edition
@@ -205,6 +247,11 @@ src/
 ```
 
 ## Verifier
+
+Le rendu du 4x4, des roues et des equipements est interpole entre les pas
+physiques a 120 Hz ; la camera suit le meme instant. Les colliders et les
+calculs de forces ne sont pas lisses. Voir
+[le diagnostic de fluidite et les limites des roues coincees](docs/vehicle-presentation.md).
 
 ```powershell
 cargo fmt --all -- --check

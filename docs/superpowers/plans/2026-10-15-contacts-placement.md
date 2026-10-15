@@ -1,58 +1,60 @@
-# Wheel Contacts And Placement Preview Implementation Plan
+# Wheel Diagnostic And Placement Preview Delivery
 
-**Goal:** Reduce wheel/obstacle penetration without changing tire dimensions or applying forces twice, and add a collider-free placement preview with rotation and cancellation.
+**Scope decision:** The user chose to retain the original Rapier wheel controller
+and deliver diagnosis plus placement preview first. The local adapted controller
+was removed. This decision supersedes the earlier integrated-envelope experiment
+and its 206-test results. Tire penetration is reproduced, not fixed.
 
-**Architecture:** Keep canonical terrain and stored obstacles unchanged. A dedicated placement-preview module owns temporary assets/entities, while the terrain runtime remains the only path that commits obstacles. Diagnose wheel geometry against the actual GLB and reproduce the vertical-step failure before selecting a contact-query change. Retain the existing suspension, traction, braking and friction-limiting calculations.
+## Delivered
 
-**Tech Stack:** Existing pinned Bevy, Rapier, bevy_egui and serde. No dependency upgrade or vehicle-profile edit.
+- [x] Measure actual GLB pivots, rubber/tread radius and suspension offsets.
+- [x] Preserve controller.rs, visuals.rs, vehicle-profile JSON and the GLB.
+- [x] Add optional V diagnostics for physical wheel centers, radius, rays,
+  native contacts and actual obstacle colliders.
+- [x] Keep finite-cylinder shape queries read-only in contacts.rs. No force
+  solver, physical wheel collider or contact replacement is connected.
+- [x] Characterize native 25 cm step penetration forward and reverse, with
+  flat-ground/static-load and GLB parity checks. These are diagnosis tests,
+  not claims that the future low-penetration acceptance criterion passes.
+- [x] Add real transparent green/red placement geometry without a collider.
+- [x] Implement Q/E yaw, Shift fine steps, physical AZERTY alias, repeated
+  placements, fresh picks and UI-owned input protection.
+- [x] Clean temporary meshes, materials and entities on cancellation, tool,
+  mode or scene changes. Escape cancels without exiting the game.
+- [x] Retain sculpting, selection, Undo/Redo, exact JSON and both workshops.
+- [x] Remove the experimental copied Rapier controller and its license/tests.
+- [x] Document that physical tire improvement is deferred.
 
-## Audit Evidence
+## Verification
 
-- The GLB rubber radius is 0.53000003 m; the physical default and visual reference radius are 0.53 m. Tread reaches 0.55512388 m, with rubber width 0.342 m.
-- The model root is translated by -1 m and rotated by PI around Y. Suspension Y = 0.78 - travel therefore matches physical mount Y = -0.22 minus travel. Front/rear and left/right pivots match MOUNTS after that rotation.
-- Rapier 0.33-alpha uses one descending ray per wheel, length rest_length + radius. The ray misses a vertical face before the hub crosses its edge. RayCastInfo is read-only and contact injection is not exposed.
-- Workshop cubes use exact cuboids and unit scale. Other primitives bake the same dimensions into meshes/colliders.
-- Options: radius/visual offsets would hide the cause; additional physical wheel colliders risk duplicate support/friction. Selected a narrowly derived native-controller adapter that replaces contact detection while retaining one force path, without a dependency upgrade or new wheel colliders.
+The retained-controller snapshot passes 201 normal tests and 201 release
+tests, with no ignored tests. This replaces the previous 206-test experimental
+snapshot. controller.rs and visuals.rs have no diff from their original
+implementation. Native tire probes measure the current penetration defect,
+rather than certify a correction.
 
-## Work Areas
+The placement renderer scenario was verified with six captures, yaw 15 -> 10,
+exact displayed/committed pose, cancellation cleanup, selection, JSON,
+Undo/Redo and approximately 10 m of driving with the physics window.
+No automated test is presented as manual driving-feel validation.
 
-- Vehicle work: controller.rs, visuals.rs, vehicle plugin, focused contact-query/diagnostic modules and GLB/step/flat regression tests. Parent owns this work.
-- Preview work: terrain runtime and a placement-preview module, narrowly necessary terrain UI changes, tests and shortcut documentation. Independent worker owns this work; no vehicle/main edits.
-- Shared verification: serialize Cargo builds because the Windows linker is memory-heavy. Preserve the already staged Terrain Workshop implementation.
+## Deferred Work
 
-## Steps
+A future physical contact adapter requires an explicit design decision and a
+single force path. Do not silently reconnect the geometric diagnostic to the
+suspension solver. Mission A begins with the separate diagnostic/design in
+`docs/vehicle-collision-design.md`; its body collision and equipment work is
+not already implemented by this delivery.
 
-- [x] Measure actual GLB vertices and pivots; document the radius, tread and suspension comparison.
-- [x] Add diagnostic overlays for physical centers/radii, native contacts, ray directions and obstacle collider wireframes. Keep diagnostics optional and out of persisted profiles.
-- [x] Add a vertical-step regression showing excessive penetration with the existing central ray. Keep a flat-ground contact/ride-height regression and GLB geometry parity checks.
-- [x] Derive a contact-injectable adapter from the pinned Rapier implementation with source/license attribution. Use native Parry/Rapier shape casting for a finite-width wheel envelope. Preserve force equations, mass normalization, friction limits, braking, steering and the 120 Hz schedule; never run native and adapted force solvers together.
-- [x] Verify the step/rock envelope detects obstacles before the central ray while flat-ground support stays equivalent. Test reverse, steering, no contact, invalid inputs and negative maximum-compression limits. Review raised-cast overlap and add a combined ceiling/step regression.
-- [x] Add preview tests first: geometry/scale/orientation parity, no rigid body or collider, stable handles, valid/invalid colors, UI ownership, Q/E increments, repeated placements and cleanup on cancellation/tool/mode/scene changes.
-- [x] Implement preview as a real transparent mesh owned separately from persisted scene objects. Compute one candidate pose for preview and confirmation. Keep rotation per catalog kind; Q/E are 15 degrees, Shift+Q/E are 5 degrees. RMB/Escape cancel and consume placement input without exiting the game or driving.
-- [x] Confirm only through the existing transactional commit_objects path after a fresh valid pick, with no UI-captured mouse. Remove temporary assets and entities when the preview is no longer applicable.
-- [x] Review both changes and run focused tests before full normal/release suites. Run cargo fmt --all -- --check, cargo test, cargo test --release, cargo build --release, git diff --check and index whitespace checks.
-- [x] Execute the native renderer probe for preview rotation/cancellation, obstacle contact diagnostics, driving and the two workshops. Inspect screenshots; distinguish automated driving from a manual feel assessment.
-- [x] Update README and terrain documentation with controls, diagnosed cause, adapter provenance, actual checks and remaining ray/finite-wheel limitations. Do not commit, push or merge unrelated staged work.
-
-## Final Evidence
-
-- 206/206 tests pass in normal and release profiles, none ignored. Formatting, release build and both Git whitespace checks pass.
-- The original central ray fails the step acceptance test at 0.2531546 m. The selected envelope path passes at 0.037604123 m forward and 0.03319609 m reverse; native flat-ground force parity is exact.
-- Final native wheel probe: four wheels contact the step, 13.312 m travelled, maximum rubber penetration 0.01868 m, four captures inspected, exit 0.
-- Final terrain probe: six captures inspected, yaw 15 -> 10, exact preview/committed pose, cancellation cleanup, JSON and Undo/Redo, 9.86 m driving with the physics window, eight objects and nine scene colliders, exit 0. Windows denied one native cursor-warp request; injected inputs and all assertions still succeeded.
-- No claim of manually validated driving feel or perfect rigid-wheel CCD. GLB, wheel dimensions, vehicle-profile JSON and Legacy force equations unchanged. Current corrections remain local; pre-existing staged changes were preserved.
-
-## Verification Commands
+## Commands
 
 ```powershell
-cargo test --release placement
-cargo test --release wheel
 cargo fmt --all -- --check
 cargo test
 cargo test --release
 cargo build --release
 git diff --check
-git diff --cached --check
 ```
 
-Cargo uses the existing target junction to D:\motor-trail-build, requiring the same execution permission as the previous verification. Native screenshots and probe JSON go to this chat's visualization directory, not user scene files.
+Cargo uses the existing target junction to D:\motor-trail-build. Probe images
+and JSON belong in the task visualization directory, not user scene files.

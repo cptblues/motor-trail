@@ -232,12 +232,15 @@ Le 4x4 a parcouru environ 10 m pendant l'intervalle de conduite automatise.
 La scene finale comptait huit objets et neuf colliders de scene. Le ressenti
 de conduite reste a evaluer manuellement ; ces controles n'en font pas la promesse.
 
-### Diagnostic Et Apercu
+### Diagnostic Et Apercu (Livraison Precedente)
 
-Le perimetre retenu le 15 octobre est le diagnostic et l'apercu uniquement.
+Le perimetre initial retenu le 15 octobre etait le diagnostic et l'apercu uniquement.
 Le controleur physique reste intact, ainsi que les formats JSON et les profils.
 Les regressions precedentes de sculpture, conduite, profils, capture egui,
 historique et sauvegarde sont conservees.
+La base avec controleur natif passe 201 tests en mode normal et 201 en release,
+sans test ignore. Les anciens resultats a 206 tests concernaient l'adaptateur
+experimental retire et ne decrivent pas la livraison retenue.
 
 Le diagnostic du GLB est decrit dans
 [Diagnostic des contacts](wheel-contact-diagnosis.md). Le rayon central manque
@@ -251,9 +254,9 @@ rotation cumulee par primitive, Maj pour le pas fin, clic droit/Echap pour
 annuler. Les tests verifient aussi le nettoyage des entites et assets lors des
 changements d'outil, de mode et de scene, ainsi que les entrees capturees par egui.
 
-Le smoke graphique final s'est termine avec six captures inspectees : apercu
+Le smoke graphique de l'apercu s'est termine avec six captures inspectees : apercu
 vert/rouge, rotation 15 puis 10 degres, annulation avec nettoyage, confirmation
-a la pose affichee, selection 3D, JSON, Undo/Redo et environ 9.86 m en conduite
+a la pose affichee, selection 3D, JSON, Undo/Redo et environ 10 m en conduite
 avec l'atelier physique ouvert. Scene finale : huit objets et neuf colliders.
 Windows a refuse une demande de deplacement du curseur natif durant ce probe ;
 les evenements injectes, les raycasts et toutes les assertions ont neanmoins
@@ -271,7 +274,17 @@ Modifies : `Cargo.toml`, `Cargo.lock`, `src/main.rs`, `src/vehicle/mod.rs`,
 Les assets du vehicule, son controleur et les JSON de profils ne changent pas.
 Le diagnostic et l'apercu ajoutent `src/terrain/runtime/placement_preview.rs`,
 `src/vehicle/{contacts,diagnostics}.rs`, leurs tests/probes et
-`docs/wheel-contact-diagnosis.md`. Aucun adaptateur physique local n'est livre.
+`docs/wheel-contact-diagnosis.md`. Cette etape initiale ne livrait pas d'adaptateur physique local.
+
+### Extension Mission A
+
+La mission suivante ajoute une carrosserie composee, les fixations et les
+equipements rigides, ainsi qu'un backend pneus experimental explicitement
+desactive par defaut. Le vrai controleur natif et le format JSON du terrain
+restent preserves. Voir [Physique modulaire](vehicle-physics.md).
+Les remises en position utilisent l'enveloppe complete installee ; une
+empreinte hors carte laisse le vehicule immobilise en Edition avec une erreur.
+Le rechargement du terrain conserve les equipements enfants du vehicule.
 
 Limites de cette version : pas de streaming, de grottes ou de relief en surplomb ;
 pas de gizmo de transformation complet (champs numeriques et selection 3D) ;

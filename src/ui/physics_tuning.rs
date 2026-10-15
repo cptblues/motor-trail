@@ -10,6 +10,7 @@ use bevy_egui::{EguiContexts, EguiPreUpdateSet, EguiPrimaryContextPass, egui};
 use crate::persistence::profiles::ProfileStore;
 use crate::vehicle::config::{PhysicsModel, VehiclePhysicsConfig};
 use crate::vehicle::telemetry::VehicleTelemetry;
+use crate::vehicle::wheel_settings::WheelContactSettings;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum TuningTab {
@@ -34,6 +35,7 @@ struct FrameSnapshot {
     frame: u64,
     draft: UiDraft,
     config: VehiclePhysicsConfig,
+    experimental_tires: Option<bool>,
     profile_name_state: egui::widgets::text_edit::TextEditState,
 }
 
@@ -133,6 +135,9 @@ fn physics_tuning_ui(
     mut config: ResMut<VehiclePhysicsConfig>,
     mut profiles: ResMut<ProfileStore>,
     telemetry: Option<Res<VehicleTelemetry>>,
+    mut wheel_settings: Option<ResMut<WheelContactSettings>>,
+    physics: Option<Res<crate::vehicle::VehiclePhysics>>,
+    equipment: Option<Res<crate::vehicle::equipment_runtime::EquipmentRuntime>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     if !state.open {
@@ -160,6 +165,9 @@ fn physics_tuning_ui(
             frame,
             draft: state.draft.clone(),
             config: config.clone(),
+            experimental_tires: wheel_settings
+                .as_ref()
+                .map(|settings| settings.experimental),
             profile_name_state: egui::TextEdit::load_state(ctx, profile_name_id())
                 .unwrap_or_default(),
         });
@@ -169,6 +177,7 @@ fn physics_tuning_ui(
     // configuration and filesystem actions only once per egui frame.
     let mut draft = snapshot.draft;
     let mut candidate = snapshot.config;
+    let mut experimental_tires = snapshot.experimental_tires;
     egui::TextEdit::store_state(ctx, profile_name_id(), snapshot.profile_name_state);
     let mut open = state.open;
     let mut action = None;
@@ -225,6 +234,10 @@ fn physics_tuning_ui(
                     format!("Reglage refuse : {error}"),
                 );
             }
+            for error in [physics.as_ref().and_then(|value|value.error.as_ref()),
+                equipment.as_ref().and_then(|value|value.error.as_ref())].into_iter().flatten() {
+                ui.colored_label(ui.visuals().error_fg_color,error);
+            }
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 for (tab, label) in [
@@ -244,7 +257,16 @@ fn physics_tuning_ui(
                 .show(ui, |ui| {
                     match draft.tab {
                         TuningTab::Diagnostic => diagnostics(ui, telemetry.as_deref()),
-                        tab => parameter_editor(ui, tab, &mut candidate, &baseline),
+                        tab => {
+                            parameter_editor(ui, tab, &mut candidate, &baseline);
+                            if tab == TuningTab::Tires {
+                                if let Some(experimental) = &mut experimental_tires {
+                                    ui.separator();
+                                    ui.checkbox(experimental,"Contacts volumetriques (experimental)")
+                                        .on_hover_text("Option de session non enregistree dans les profils. Le controleur natif reste la reference.");
+                                }
+                            }
+                        },
                     }
                     ui.separator();
                     comparison_controls(ui, &mut draft, &candidate, &state, &profiles, &mut action);
@@ -252,6 +274,9 @@ fn physics_tuning_ui(
         });
 
     if state.committed_frame != Some(frame) {
+        if let (Some(settings), Some(experimental)) = (&mut wheel_settings, experimental_tires) {
+            settings.experimental = experimental;
+        }
         state.committed_frame = Some(frame);
         state.draft = draft;
         state.open = open;
@@ -1010,6 +1035,20 @@ fn diagnostics(ui: &mut egui::Ui, telemetry: Option<&VehicleTelemetry>) {
         return;
     };
     ui.strong(format!("Modele actif : {}", telemetry.model.label()));
+    if telemetry.model == PhysicsModel::Rapier {
+        ui.label(if telemetry.experimental_tires {
+            "Contacts pneus : volumetriques experimentaux"
+        } else {
+            "Contacts pneus : Rapier natif"
+        });
+    }
+    ui.label(format!(
+        "Masse effective : {:.1} kg | Centre de masse local : ({:.3}, {:.3}, {:.3}) m",
+        telemetry.effective_mass_kg,
+        telemetry.effective_center_of_mass.x,
+        telemetry.effective_center_of_mass.y,
+        telemetry.effective_center_of_mass.z
+    ));
     egui::Grid::new("physics_telemetry_summary")
         .num_columns(4)
         .striped(true)

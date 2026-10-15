@@ -11,11 +11,10 @@ use super::config::{TerrainConfig, TerrainPreset};
 use super::history::{EditHistory, EditOperation};
 use super::obstacles::{Obstacle, ObstacleKind};
 use super::persistence::TerrainStore;
-use super::scene::{
-    ReferenceScene, SPAWN_HALF_DEPTH, SPAWN_HALF_WIDTH, TerrainScene, VehicleSpawn,
-};
+use super::scene::{ReferenceScene, TerrainScene, VehicleSpawn};
 use crate::ui::UiInputCapture;
 use crate::vehicle::config::VehiclePhysicsConfig;
+use crate::vehicle::equipment_runtime::EquipmentRuntime;
 use crate::vehicle::telemetry::VehicleTelemetry;
 use crate::vehicle::{Truck, VehiclePhysics, VehicleVisualState};
 mod placement_preview;
@@ -213,6 +212,7 @@ impl Plugin for TerrainPlugin {
                 FixedUpdate,
                 (apply_stroke, synchronize_terrain)
                     .chain()
+                    .after(crate::vehicle::equipment_runtime::sync)
                     .before(crate::vehicle::controller::apply_configuration)
                     .before(PhysicsSet::SyncBackend),
             )
@@ -807,7 +807,41 @@ fn draw_editor(state: Res<TerrainWorkshopState>, active: Res<ActiveTerrain>, mut
 }
 
 /// Conservative bound over every cell intersecting the rotated chassis footprint.
+pub fn checked_spawn_transform(
+    scene: &TerrainScene,
+    config: &VehiclePhysicsConfig,
+    bounds: (Vec3, Vec3),
+) -> Result<Transform, String> {
+    if !bounds.0.is_finite() || !bounds.1.is_finite() || bounds.0.cmpge(bounds.1).any() {
+        return Err("Enveloppe du vehicule invalide".into());
+    }
+    let rotation = Quat::from_rotation_y(scene.spawn.yaw_degrees.to_radians());
+    let position = Vec3::from_array(scene.spawn.position);
+    for x in [bounds.0.x, bounds.1.x] {
+        for z in [bounds.0.z, bounds.1.z] {
+            let point = position + rotation * Vec3::new(x, 0.0, z);
+            if point.x.abs() > scene.terrain.config.width * 0.5 - 0.05
+                || point.z.abs() > scene.terrain.config.depth * 0.5 - 0.05
+            {
+                return Err(
+                    "Le vehicule et ses equipements depassent les limites du terrain au depart"
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok(spawn_with_bounds(scene, config, bounds))
+}
+
 pub fn spawn_transform(scene: &TerrainScene, config: &VehiclePhysicsConfig) -> Transform {
+    spawn_with_bounds(scene, config, crate::vehicle::collision::body_bounds())
+}
+
+fn spawn_with_bounds(
+    scene: &TerrainScene,
+    config: &VehiclePhysicsConfig,
+    bounds: (Vec3, Vec3),
+) -> Transform {
     let position = Vec3::from_array(scene.spawn.position);
     let rotation = Quat::from_rotation_y(scene.spawn.yaw_degrees.to_radians());
     let mut ground = scene
@@ -816,8 +850,8 @@ pub fn spawn_transform(scene: &TerrainScene, config: &VehiclePhysicsConfig) -> T
         .unwrap_or(position.y);
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for x in [-SPAWN_HALF_WIDTH, SPAWN_HALF_WIDTH] {
-        for z in [-SPAWN_HALF_DEPTH, SPAWN_HALF_DEPTH] {
+    for x in [bounds.0.x, bounds.1.x] {
+        for z in [bounds.0.z, bounds.1.z] {
             let point = position + rotation * Vec3::new(x, 0.0, z);
             min = min.min(Vec2::new(point.x, point.z));
             max = max.max(Vec2::new(point.x, point.z));
@@ -838,40 +872,66 @@ pub fn spawn_transform(scene: &TerrainScene, config: &VehiclePhysicsConfig) -> T
     for object in &scene.obstacles {
         let center = Vec3::from_array(object.position);
         let extent = Vec3::from_array(object.size).length() * 0.5;
-        if Vec2::new(center.x - position.x, center.z - position.z).length() < extent + 2.5 {
+        let radius = Vec2::new(
+            bounds.0.x.abs().max(bounds.1.x.abs()),
+            bounds.0.z.abs().max(bounds.1.z.abs()),
+        )
+        .length();
+        if Vec2::new(center.x - position.x, center.z - position.z).length() < extent + radius {
             ground = ground.max(center.y + extent);
         }
     }
     Transform::from_xyz(
         position.x,
-        ground + crate::vehicle::controller::spawn_height(config) + 0.18,
+        ground + (crate::vehicle::controller::spawn_height(config) + 0.18).max(-bounds.0.y + 0.18),
         position.z,
     )
     .with_rotation(rotation)
 }
 
-fn reset_car(world: &mut World, dynamic: bool) {
-    let pose = spawn_transform(
-        &world.resource::<ActiveTerrain>().scene,
-        world.resource::<VehiclePhysicsConfig>(),
+fn reset_car(world: &mut World, dynamic: bool) -> bool {
+    let bounds = world.get_resource::<EquipmentRuntime>().map_or_else(
+        crate::vehicle::collision::body_bounds,
+        EquipmentRuntime::bounds,
     );
+    let config = crate::vehicle::controller::effective_configuration(
+        world.resource::<VehiclePhysicsConfig>(),
+        world.resource::<EquipmentRuntime>(),
+    )
+    .map(|(effective, _)| effective)
+    .unwrap_or_else(|_| world.resource::<VehiclePhysics>().active_config.clone());
+    let pose =
+        match checked_spawn_transform(&world.resource::<ActiveTerrain>().scene, &config, bounds) {
+            Ok(pose) => Some(pose),
+            Err(error) => {
+                let mut state = world.resource_mut::<TerrainWorkshopState>();
+                state.mode = WorkshopMode::Edit;
+                state.last_error = Some(error);
+                None
+            }
+        };
     let cars: Vec<_> = world
         .query_filtered::<Entity, With<Truck>>()
         .iter(world)
         .collect();
     for entity in cars {
         world.entity_mut(entity).insert((
-            pose,
             Velocity::zero(),
             ExternalForce::default(),
-            if dynamic {
+            if dynamic && pose.is_some() {
                 RigidBody::Dynamic
             } else {
                 RigidBody::Fixed
             },
         ));
+        if let Some(pose) = pose {
+            // Rapier's fixed-step propagation omits Bevy's dirty-tree marking.
+            world
+                .entity_mut(entity)
+                .insert((pose, TransformTreeChanged));
+        }
     }
-    *world.resource_mut::<VehiclePhysics>() = VehiclePhysics::default();
+    world.resource_mut::<VehiclePhysics>().reset_motion();
     *world.resource_mut::<VehicleVisualState>() = VehicleVisualState::default();
     world
         .resource_mut::<VehicleTelemetry>()
@@ -880,9 +940,12 @@ fn reset_car(world: &mut World, dynamic: bool) {
         state.grounded_wheels = 0;
         state.reached_refuge = false;
     }
-    if let Some(mut orbit) = world.get_resource_mut::<crate::OrbitCamera>() {
+    if let Some(pose) = pose
+        && let Some(mut orbit) = world.get_resource_mut::<crate::OrbitCamera>()
+    {
         orbit.focus = pose.translation + Vec3::Y * 0.8;
     }
+    pose.is_some()
 }
 
 fn collect_descendants(world: &World, entity: Entity, entities: &mut Vec<Entity>) {
@@ -978,7 +1041,7 @@ fn synchronize_terrain(world: &mut World) {
         };
         match built {
             (Ok(terrain), Ok(objects), mut road) => {
-                reset_car(world, false);
+                let reset_ok = reset_car(world, false);
                 sync.car_ready = false;
                 if sync.full_reload {
                     remove_scene(world, &mut sync);
@@ -1101,7 +1164,7 @@ fn synchronize_terrain(world: &mut World) {
                 sync.full_reload = false;
                 sync.dirty_region = None;
                 sync.last_publish = time;
-                sync.reset_pending = false;
+                sync.reset_pending = reset_ok && mode == WorkshopMode::Drive;
             }
             (terrain, objects, _) => {
                 let error = terrain
@@ -1113,9 +1176,9 @@ fn synchronize_terrain(world: &mut World) {
         }
     } else if !needs_publish && sync.pending_revision.is_none() {
         if sync.reset_pending || (!sync.car_ready && mode == WorkshopMode::Drive) {
-            reset_car(world, mode == WorkshopMode::Drive);
+            let reset_ok = reset_car(world, mode == WorkshopMode::Drive);
             sync.reset_pending = false;
-            sync.car_ready = mode == WorkshopMode::Drive;
+            sync.car_ready = reset_ok && mode == WorkshopMode::Drive;
         }
     }
     world.insert_resource(sync);
@@ -1138,9 +1201,36 @@ fn acknowledge_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vehicle::equipment_runtime::{EquipmentRequest, MountedEquipment};
     use bevy::ecs::system::RunSystemOnce;
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
+
+    #[test]
+    fn respawn_equipment_footprint_rejects_outside_map_and_invalid_bounds() {
+        let scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let config = VehiclePhysicsConfig::baseline();
+        assert!(
+            checked_spawn_transform(&scene, &config, (Vec3::splat(-100.0), Vec3::splat(100.0)))
+                .is_err()
+        );
+        assert!(
+            checked_spawn_transform(&scene, &config, (Vec3::splat(f32::NAN), Vec3::ONE)).is_err()
+        );
+    }
+
+    #[test]
+    fn respawn_equipment_lowest_part_gets_real_geometric_clearance() {
+        let scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let config = VehiclePhysicsConfig::baseline();
+        let pose = checked_spawn_transform(
+            &scene,
+            &config,
+            (Vec3::new(-1.0, -3.0, -2.0), Vec3::new(1.0, 2.0, 2.0)),
+        )
+        .unwrap();
+        assert!(pose.translation.y - 3.0 >= 0.179);
+    }
 
     fn app() -> App {
         let mut app = App::new();
@@ -1173,7 +1263,7 @@ mod tests {
             file: None,
             collider_count: 0,
         })
-        .add_systems(Update, process_actions)
+        .add_systems(Update, process_actions.before(crate::controls))
         .add_systems(
             PostUpdate,
             placement_preview::render.before(bevy::transform::TransformSystems::Propagate),
@@ -1182,6 +1272,7 @@ mod tests {
             FixedUpdate,
             (apply_stroke, synchronize_terrain)
                 .chain()
+                .after(crate::vehicle::equipment_runtime::sync)
                 .before(crate::vehicle::controller::apply_configuration)
                 .before(PhysicsSet::SyncBackend),
         )
@@ -1209,6 +1300,303 @@ mod tests {
             .unwrap()
             .translation
     }
+
+    fn extended_equipment_app() -> (App, Entity, Entity) {
+        let mut app = app();
+        app.world_mut().resource_mut::<TerrainWorkshopState>().mode = WorkshopMode::Edit;
+        let car = app
+            .world_mut()
+            .query_filtered::<Entity, With<Truck>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().entity_mut(car).insert(GravityScale(0.0));
+        let mut request = EquipmentRequest::demo();
+        request.catalog.definitions[0].colliders[0]
+            .local_pose
+            .translation = [4.0, -5.0, 0.0];
+        app.insert_resource(request);
+        step(&mut app, 4);
+        let equipment = app
+            .world_mut()
+            .query_filtered::<Entity, With<MountedEquipment>>()
+            .single(app.world())
+            .unwrap();
+        let runtime = app.world().resource::<EquipmentRuntime>();
+        assert!(runtime.error.is_none(), "{:?}", runtime.error);
+        let bounds = runtime.bounds();
+        assert!(bounds.0.y < -3.0 && bounds.1.x > 4.0, "{bounds:?}");
+        (app, car, equipment)
+    }
+
+    fn assert_equipment_spawn_clearance(app: &App, car: Entity, support_height: f32) {
+        let minimum = app.world().resource::<EquipmentRuntime>().bounds().0;
+        let pose = app.world().get::<Transform>(car).unwrap();
+        assert!(
+            pose.translation.y + minimum.y >= support_height + 0.17,
+            "installed equipment intersects support: pose {pose:?}, minimum {minimum:?}, support {support_height}"
+        );
+    }
+
+    #[test]
+    fn reset_rejected_equipment_profile_keeps_last_valid_controller_on_drive_and_reload() {
+        for action in [
+            WorkshopAction::SetMode(WorkshopMode::Drive),
+            WorkshopAction::LoadReference(ReferenceScene::Flat),
+        ] {
+            let mut app = app();
+            app.insert_resource(EquipmentRequest::demo());
+            step(&mut app, 5);
+            queue(&mut app, WorkshopAction::SetMode(WorkshopMode::Edit));
+            step(&mut app, 3);
+            let valid = app
+                .world()
+                .resource::<VehiclePhysics>()
+                .active_config
+                .clone();
+            app.world_mut()
+                .resource_mut::<VehiclePhysicsConfig>()
+                .chassis
+                .center_of_mass[1] = 1.0;
+            app.world()
+                .resource::<VehiclePhysicsConfig>()
+                .validate()
+                .unwrap();
+            step(&mut app, 2);
+            assert!(app.world().resource::<VehiclePhysics>().error.is_some());
+            queue(&mut app, action);
+            step(&mut app, 4);
+            assert_eq!(
+                app.world().resource::<VehiclePhysics>().active_config,
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_follows_workshop_reset_drive_and_full_reload_without_old_spawn_history() {
+        let (mut app, car, _) = extended_equipment_app();
+        for action in [
+            WorkshopAction::SetMode(WorkshopMode::Drive),
+            WorkshopAction::SetMode(WorkshopMode::Edit),
+            WorkshopAction::LoadReference(ReferenceScene::Steps),
+            WorkshopAction::LoadReference(ReferenceScene::Flat),
+            WorkshopAction::SetMode(WorkshopMode::Drive),
+        ] {
+            queue(&mut app, action);
+            for _ in 0..4 {
+                step(&mut app, 1);
+                let physical = *app.world().get::<Transform>(car).unwrap();
+                let displayed = app
+                    .world()
+                    .resource::<crate::vehicle::presentation::VehiclePresentation>()
+                    .pose_for(car, Transform::IDENTITY);
+                // This fixture has zero gravity and no drive input: it should snap
+                // to each new spawn, not sweep across the scene from the old one.
+                assert!(displayed.translation.distance(physical.translation) < 1.0e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn respawn_equipment_runtime_edit_drive_and_reload_preserve_installed_entities() {
+        let (mut app, car, equipment) = extended_equipment_app();
+        let local_pose = *app.world().get::<Transform>(equipment).unwrap();
+        let installed = app.world().resource::<EquipmentRuntime>().active().clone();
+        let revision = app.world().resource::<EquipmentRuntime>().revision;
+        let original_root = app.world().resource::<TerrainSync>().root.unwrap();
+        assert_equipment_spawn_clearance(&app, car, 0.0);
+        for action in [
+            WorkshopAction::SetMode(WorkshopMode::Drive),
+            WorkshopAction::SetMode(WorkshopMode::Edit),
+            WorkshopAction::LoadReference(ReferenceScene::Steps),
+            WorkshopAction::LoadReference(ReferenceScene::Flat),
+            WorkshopAction::SetMode(WorkshopMode::Drive),
+        ] {
+            queue(&mut app, action);
+            step(&mut app, 4);
+            assert_eq!(app.world().get::<ChildOf>(equipment).unwrap().parent(), car);
+            assert_eq!(
+                *app.world().get::<Transform>(equipment).unwrap(),
+                local_pose
+            );
+            assert!(app.world().get::<RapierColliderHandle>(equipment).is_some());
+            assert_eq!(
+                app.world().resource::<EquipmentRuntime>().active(),
+                &installed
+            );
+            assert_eq!(
+                app.world().resource::<EquipmentRuntime>().revision,
+                revision
+            );
+            assert_equipment_spawn_clearance(&app, car, 0.0);
+            let driving =
+                app.world().resource::<TerrainWorkshopState>().mode == WorkshopMode::Drive;
+            assert_eq!(app.world().resource::<TerrainSync>().car_ready, driving);
+            assert_eq!(
+                *app.world().get::<RigidBody>(car).unwrap(),
+                if driving {
+                    RigidBody::Dynamic
+                } else {
+                    RigidBody::Fixed
+                }
+            );
+        }
+        assert!(app.world().get_entity(original_root).is_err());
+    }
+
+    #[test]
+    fn respawn_equipment_runtime_extended_rotated_footprint_clears_ground_and_obstacles() {
+        for obstacle_support in [false, true] {
+            let (mut app, car, equipment) = extended_equipment_app();
+            let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+            scene.spawn.position = [0.0; 3];
+            scene.spawn.yaw_degrees = 90.0;
+            let support_height = if obstacle_support {
+                let size = Vec3::splat(0.5);
+                scene.obstacles.push(Obstacle {
+                    id: 1,
+                    kind: ObstacleKind::Cube,
+                    position: [0.0, 3.0, -4.0],
+                    rotation_degrees: [0.0; 3],
+                    size: size.to_array(),
+                });
+                3.0 + size.length() * 0.5
+            } else {
+                let peak = (0..scene.terrain.vertex_count())
+                    .find(|&index| {
+                        let point = scene.terrain.vertex_position(index);
+                        point.x == 0.0 && point.z == -4.0
+                    })
+                    .unwrap();
+                scene.terrain.heights[peak] = 4.0;
+                4.0
+            };
+            scene.validate().unwrap();
+            app.world_mut().resource_mut::<ActiveTerrain>().scene = scene;
+            app.world_mut().resource_mut::<ActiveTerrain>().revision += 1;
+            {
+                let mut sync = app.world_mut().resource_mut::<TerrainSync>();
+                sync.dirty = true;
+                sync.full_reload = true;
+                sync.reset_pending = true;
+            }
+            step(&mut app, 4);
+            assert_equipment_spawn_clearance(&app, car, support_height);
+            assert_eq!(app.world().get::<ChildOf>(equipment).unwrap().parent(), car);
+            let pose = app.world().get::<Transform>(car).unwrap();
+            assert!((pose.rotation * Vec3::X).distance(Vec3::NEG_Z) < 1e-5);
+        }
+    }
+
+    #[test]
+    fn respawn_equipment_runtime_rejected_drive_keeps_pose_fixed_and_can_recover() {
+        let (mut app, car, equipment) = extended_equipment_app();
+        let before = *app.world().get::<Transform>(car).unwrap();
+        queue(
+            &mut app,
+            WorkshopAction::SetSpawn(VehicleSpawn {
+                position: [29.0, 0.0, 0.0],
+                yaw_degrees: 0.0,
+            }),
+        );
+        queue(&mut app, WorkshopAction::SetMode(WorkshopMode::Drive));
+        step(&mut app, 4);
+        assert_eq!(
+            *app.world().get::<Transform>(car).unwrap(),
+            before,
+            "rejected equipment footprint must not teleport the vehicle"
+        );
+        assert_eq!(
+            *app.world().get::<RigidBody>(car).unwrap(),
+            RigidBody::Fixed
+        );
+        assert_eq!(app.world().get::<Velocity>(car).unwrap().linear, Vec3::ZERO);
+        let state = app.world().resource::<TerrainWorkshopState>();
+        assert_eq!(state.mode, WorkshopMode::Edit);
+        assert!(state.last_error.is_some());
+        assert!(!app.world().resource::<TerrainSync>().car_ready);
+        assert_eq!(app.world().get::<ChildOf>(equipment).unwrap().parent(), car);
+        queue(
+            &mut app,
+            WorkshopAction::SetSpawn(VehicleSpawn {
+                position: [0.0; 3],
+                yaw_degrees: 0.0,
+            }),
+        );
+        queue(&mut app, WorkshopAction::SetMode(WorkshopMode::Drive));
+        step(&mut app, 4);
+        assert!(
+            app.world()
+                .resource::<TerrainWorkshopState>()
+                .last_error
+                .is_none()
+        );
+        assert!(app.world().resource::<TerrainSync>().car_ready);
+        assert_eq!(
+            *app.world().get::<RigidBody>(car).unwrap(),
+            RigidBody::Dynamic
+        );
+        assert_equipment_spawn_clearance(&app, car, 0.0);
+    }
+
+    #[test]
+    fn respawn_equipment_runtime_rejected_reload_never_marks_the_car_ready() {
+        let (mut app, car, equipment) = extended_equipment_app();
+        let before = *app.world().get::<Transform>(car).unwrap();
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.draft.width = 8.0;
+            state.draft.depth = 8.0;
+            state.draft.resolution = 0.5;
+        }
+        queue(&mut app, WorkshopAction::Generate);
+        step(&mut app, 4);
+        assert_eq!(
+            app.world()
+                .resource::<ActiveTerrain>()
+                .scene
+                .terrain
+                .config
+                .width,
+            8.0
+        );
+        assert_eq!(*app.world().get::<Transform>(car).unwrap(), before);
+        assert_eq!(
+            *app.world().get::<RigidBody>(car).unwrap(),
+            RigidBody::Fixed
+        );
+        assert!(
+            app.world()
+                .resource::<TerrainWorkshopState>()
+                .last_error
+                .is_some()
+        );
+        assert_eq!(
+            app.world().resource::<TerrainWorkshopState>().mode,
+            WorkshopMode::Edit
+        );
+        assert!(!app.world().resource::<TerrainSync>().car_ready);
+        assert_eq!(app.world().get::<ChildOf>(equipment).unwrap().parent(), car);
+        queue(&mut app, WorkshopAction::SetMode(WorkshopMode::Drive));
+        step(&mut app, 4);
+        assert_eq!(*app.world().get::<Transform>(car).unwrap(), before);
+        assert_eq!(
+            *app.world().get::<RigidBody>(car).unwrap(),
+            RigidBody::Fixed
+        );
+        assert_eq!(
+            app.world().resource::<TerrainWorkshopState>().mode,
+            WorkshopMode::Edit
+        );
+        assert!(
+            app.world()
+                .resource::<TerrainWorkshopState>()
+                .last_error
+                .is_some()
+        );
+        assert!(!app.world().resource::<TerrainSync>().car_ready);
+    }
+
     fn floor_hit(app: &mut App) -> f32 {
         app.world_mut()
             .run_system_once(

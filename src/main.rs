@@ -92,6 +92,7 @@ fn main() -> AppExit {
         }))
         .add_plugins((VehiclePlugin, EguiPlugin::default(), PhysicsTuningPlugin))
         .add_plugins(vehicle::diagnostics::WheelDiagnosticsPlugin)
+        .add_plugins(vehicle::body_probe::VehicleBodyProbePlugin)
         .add_plugins((
             terrain::TerrainPlugin,
             ui::terrain_workshop::TerrainWorkshopPlugin,
@@ -274,13 +275,15 @@ fn truck(
     // vers +Z. Le pivot est donc retourné de PI autour de Y, sans toucher
     // aux colliders ou aux points d'attache des roues.
     commands.entity(car).with_children(|p| {
+        let model_pose = Transform::from_xyz(0.0, -1.0, 0.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::PI));
         p.spawn((
+            vehicle::presentation::VehicleGraphic::new(car, Transform::IDENTITY, model_pose),
             WorldAssetRoot(
                 asset_server
                     .load(GltfAssetLabel::Scene(0).from_asset("vehicles/motor_trail_4x4.glb")),
             ),
-            Transform::from_xyz(0.0, -1.0, 0.0)
-                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
+            model_pose,
         ));
     });
 }
@@ -289,7 +292,8 @@ fn controls(
     keys: Res<ButtonInput<KeyCode>>,
     capture: Res<UiInputCapture>,
     active: Res<terrain::runtime::ActiveTerrain>,
-    workshop: Res<terrain::runtime::TerrainWorkshopState>,
+    mut workshop: ResMut<terrain::runtime::TerrainWorkshopState>,
+    equipment: Res<vehicle::equipment_runtime::EquipmentRuntime>,
     config: Res<VehiclePhysicsConfig>,
     mut state: ResMut<GameState>,
     mut physics: ResMut<VehiclePhysics>,
@@ -311,15 +315,30 @@ fn controls(
         state.low_range = !state.low_range;
     }
     if keys.just_pressed(KeyCode::KeyR) {
+        let spawn_config = vehicle::controller::effective_configuration(&config, &equipment)
+            .map(|(effective, _)| effective)
+            .unwrap_or_else(|_| physics.active_config.clone());
+        let pose = match terrain::runtime::checked_spawn_transform(
+            &active.scene,
+            &spawn_config,
+            equipment.bounds(),
+        ) {
+            Ok(pose) => pose,
+            Err(error) => {
+                workshop.last_error = Some(error);
+                return;
+            }
+        };
         if let Ok((mut transform, mut speed, mut force)) = cars.single_mut() {
-            *transform = terrain::runtime::spawn_transform(&active.scene, &config);
+            *transform = pose;
             *speed = Velocity::zero();
             *force = ExternalForce::default();
-            *physics = VehiclePhysics::default();
+            physics.reset_motion();
             *visual = VehicleVisualState::default();
             telemetry.reset_motion_history();
             state.grounded_wheels = 0;
             state.reached_refuge = false;
+            workshop.last_error = None;
         }
     }
 }
@@ -348,6 +367,7 @@ fn objective(
 // la suspension et le véhicule sur le terrain, même en conduisant.
 fn camera_follow(
     time: Res<Time>,
+    presentation: Res<vehicle::presentation::VehiclePresentation>,
     capture: Res<UiInputCapture>,
     workshop: Res<terrain::runtime::TerrainWorkshopState>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -365,6 +385,7 @@ fn camera_follow(
     let (Ok((car_entity, car)), Ok(mut camera)) = (cars.single(), cameras.single_mut()) else {
         return;
     };
+    let car = presentation.pose_for(car_entity, *car);
 
     // C recentre derrière le 4x4 et restaure la distance de conduite.
     if !capture.keyboard && keys.just_pressed(KeyCode::KeyC) {
@@ -512,6 +533,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn wheel_rendering_advances_between_fixed_ticks_at_144_fps() {
+        for experimental in [false, true] {
+            let mut app = vehicle_test_app(Quat::IDENTITY);
+            app.insert_resource(vehicle::wheel_settings::WheelContactSettings { experimental });
+            advance_vehicle(&mut app, 360);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyW);
+            advance_vehicle(&mut app, 120);
+            app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+                1.0 / 144.0,
+            )));
+            let mut checked = 0;
+            for _ in 0..144 {
+                let before = app.world().resource::<VehicleVisualState>().spins[1];
+                let rotation = app
+                    .world_mut()
+                    .query::<(&Name, &Transform)>()
+                    .iter(app.world())
+                    .find(|(name, _)| name.as_str() == "WheelSpin_FL")
+                    .unwrap()
+                    .1
+                    .rotation;
+                app.update();
+                let after = app.world().resource::<VehicleVisualState>().spins[1];
+                if before == after {
+                    let rendered = app
+                        .world_mut()
+                        .query::<(&Name, &Transform)>()
+                        .iter(app.world())
+                        .find(|(name, _)| name.as_str() == "WheelSpin_FL")
+                        .unwrap()
+                        .1
+                        .rotation;
+                    assert!(
+                        rotation.angle_between(rendered) > 1.0e-5,
+                        "moving wheel repeated a rendered pose on a frame without a physics tick"
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked >= 20);
+        }
+    }
+
+    #[test]
+    fn chase_camera_tracks_the_displayed_pose_and_not_the_latest_physics_tick() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.init_resource::<terrain::runtime::TerrainWorkshopState>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<AccumulatedMouseMotion>()
+            .init_resource::<AccumulatedMouseScroll>()
+            .init_resource::<OrbitCamera>()
+            .add_systems(Update, camera_follow);
+        app.world_mut()
+            .spawn((ChaseCamera, Transform::from_xyz(0.0, 5.0, -10.0)));
+        advance_vehicle(&mut app, 360);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / 144.0,
+        )));
+        let mut checked = 0;
+        for _ in 0..144 {
+            let before = app.world().resource::<OrbitCamera>().focus;
+            app.update();
+            let (entity, physical) = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<Truck>>()
+                .single(app.world())
+                .map(|(entity, pose)| (entity, *pose))
+                .unwrap();
+            let shown = app
+                .world()
+                .resource::<vehicle::presentation::VehiclePresentation>()
+                .pose_for(entity, physical);
+            let alpha = 1.0 - (-7.0 * app.world().resource::<Time>().delta_secs()).exp();
+            let expected = before.lerp(shown.translation + Vec3::Y * 0.8, alpha);
+            assert!(
+                app.world()
+                    .resource::<OrbitCamera>()
+                    .focus
+                    .distance(expected)
+                    < 1.0e-5
+            );
+            if shown.translation.distance(physical.translation) > 0.001 {
+                checked += 1;
+            }
+        }
+        assert!(checked > 50);
+    }
+
     fn truck_position(app: &mut App) -> Vec3 {
         app.world_mut()
             .query_filtered::<&Transform, With<Truck>>()
@@ -539,6 +654,42 @@ mod tests {
             .unwrap()
             .bodies[handle.0]
             .mass()
+    }
+
+    #[test]
+    fn rollover_roof_and_existing_cargo_remain_above_flat_ground() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        {
+            let mut cars = app
+                .world_mut()
+                .query_filtered::<&mut Transform, With<Truck>>();
+            let mut car = cars.single_mut(app.world_mut()).unwrap();
+            *car = Transform::from_xyz(0.0, 3.0, 0.0)
+                .with_rotation(Quat::from_rotation_z(std::f32::consts::PI));
+        }
+        advance_vehicle(&mut app, 1200);
+        let car = *app
+            .world_mut()
+            .query_filtered::<&Transform, With<Truck>>()
+            .single(app.world())
+            .unwrap();
+        let mut minimum = f32::INFINITY;
+        for x in [-0.785, 0.785] {
+            for z in [-1.37, 0.53] {
+                minimum = minimum.min(car.transform_point(Vec3::new(x, 1.164, z)).y);
+            }
+        }
+        minimum = minimum.min(car.transform_point(Vec3::new(-0.43, 1.5225, -1.05)).y);
+        assert!(
+            minimum > -0.04,
+            "Roof/cargo penetrated the floor by {} m; pose {car:?}",
+            -minimum
+        );
+        assert!(
+            (car.rotation * Vec3::Y).y < -0.5,
+            "The truck was automatically righted"
+        );
+        assert!(truck_velocity(&mut app).linear.length() < 0.2);
     }
 
     #[test]
@@ -582,14 +733,46 @@ mod tests {
     }
 
     fn characterize_raycast_step(direction: f32) {
+        let penetration = measure_step(direction, false, 0.25, true);
+        // Characterize the retained controller's limitation, not a corrected contact.
+        assert!(
+            (0.20..0.29).contains(&penetration),
+            "Native raycast diagnostic changed: penetration {penetration} m"
+        );
+    }
+
+    #[test]
+    fn wheel_experimental_crosses_25cm_steps_forward_and_reverse() {
+        for direction in [-1.0, 1.0] {
+            let penetration = measure_step(direction, true, 0.25, true);
+            assert!(
+                penetration < 0.065,
+                "Experimental step penetration {penetration} m"
+            );
+        }
+    }
+
+    #[test]
+    fn wheel_experimental_taller_step_stays_finite_without_an_arbitrary_climb_impulse() {
+        let penetration = measure_step(1.0, true, 0.4, false);
+        assert!(
+            penetration < 0.10,
+            "Higher-step penetration {penetration} m"
+        );
+    }
+
+    fn measure_step(direction: f32, experimental: bool, height: f32, must_cross: bool) -> f32 {
         use terrain::obstacles::{Obstacle, ObstacleKind};
         let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.world_mut()
+            .resource_mut::<vehicle::wheel_settings::WheelContactSettings>()
+            .experimental = experimental;
         let obstacle = Obstacle {
             id: 1,
             kind: ObstacleKind::Cube,
-            position: [0.0, 0.125, 4.0 * direction],
+            position: [0.0, height * 0.5, 4.0 * direction],
             rotation_degrees: [0.0; 3],
-            size: [5.0, 0.25, 3.5],
+            size: [5.0, height, 3.5],
         };
         let (_, collider) = obstacle.build().unwrap();
         app.world_mut()
@@ -626,16 +809,14 @@ mod tests {
         }
         assert!(sampled > 20, "The vehicle never reached the vertical step");
         assert!(
-            truck_position(&mut app).z * direction > 7.0,
+            !must_cross || truck_position(&mut app).z * direction > 7.0,
             "The vehicle did not cross the step"
         );
-        // Characterize the retained controller's limitation, not a corrected contact.
-        assert!(
-            (0.20..0.29).contains(&penetration),
-            "Native raycast diagnostic changed: penetration {penetration} m"
-        );
         assert!(truck_velocity(&mut app).linear.is_finite());
-        println!("Step direction {direction}: max rubber penetration {penetration} m");
+        println!(
+            "Step height {height}, direction {direction}, experimental {experimental}: max rubber penetration {penetration} m"
+        );
+        penetration
     }
 
     #[test]
@@ -943,6 +1124,190 @@ mod tests {
         assert!(
             (slow.1 - fast.1).abs() < 0.10,
             "speed depends on rendering FPS: {slow:?} vs {fast:?}"
+        );
+    }
+
+    #[test]
+    fn mission_a_switching_tire_modes_preserves_flat_support_and_saved_profile() {
+        use vehicle::wheel_backend::TireContactMode;
+        use vehicle::wheel_settings::WheelContactSettings;
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        assert!(!app.world().resource::<WheelContactSettings>().experimental);
+        advance_vehicle(&mut app, 600);
+        let native_height = truck_position(&mut app).y;
+        for experimental in [true, false, true] {
+            app.world_mut()
+                .resource_mut::<WheelContactSettings>()
+                .experimental = experimental;
+            advance_vehicle(&mut app, 1);
+            let (owner, pose) = app
+                .world_mut()
+                .query_filtered::<(Entity, &Transform), With<Truck>>()
+                .single(app.world())
+                .map(|(owner, pose)| (owner, *pose))
+                .unwrap();
+            assert_eq!(
+                app.world()
+                    .resource::<vehicle::presentation::VehiclePresentation>()
+                    .pose_for(owner, Transform::IDENTITY),
+                pose
+            );
+            advance_vehicle(&mut app, 359);
+            let physics = app.world().resource::<VehiclePhysics>();
+            assert_eq!(
+                physics.controller.as_ref().unwrap().contact_mode(),
+                if experimental {
+                    TireContactMode::Envelope
+                } else {
+                    TireContactMode::Native
+                }
+            );
+            assert_eq!(
+                *app.world().resource::<VehiclePhysicsConfig>(),
+                VehiclePhysicsConfig::baseline()
+            );
+            let load: f32 = physics.wheels.iter().map(|wheel| wheel.normal_load).sum();
+            assert!(
+                (load - 1800.0 * 9.81).abs() < 1800.0 * 9.81 * 0.03,
+                "Duplicate or missing support {load}"
+            );
+            assert!((truck_position(&mut app).y - native_height).abs() < 0.002);
+            assert!(truck_velocity(&mut app).linear.length() < 0.05);
+        }
+        *app.world_mut().resource_mut::<VehiclePhysicsConfig>() = VehiclePhysicsConfig::original();
+        advance_vehicle(&mut app, 2);
+        assert!(
+            app.world()
+                .resource::<VehiclePhysics>()
+                .controller
+                .is_none()
+        );
+        assert!(
+            !app.world()
+                .resource::<vehicle::telemetry::VehicleTelemetry>()
+                .experimental_tires
+        );
+    }
+
+    #[test]
+    fn reset_rejected_equipment_profile_keeps_last_valid_controller_on_r() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.insert_resource(vehicle::equipment_runtime::EquipmentRequest::demo())
+            .insert_resource(terrain::runtime::ActiveTerrain {
+                applied_revision: 1,
+                ..default()
+            })
+            .init_resource::<terrain::runtime::TerrainWorkshopState>()
+            .add_message::<AppExit>();
+        advance_vehicle(&mut app, 5);
+        let valid = app
+            .world()
+            .resource::<VehiclePhysics>()
+            .active_config
+            .clone();
+        app.world_mut()
+            .resource_mut::<VehiclePhysicsConfig>()
+            .chassis
+            .center_of_mass[1] = 1.0;
+        app.world()
+            .resource::<VehiclePhysicsConfig>()
+            .validate()
+            .unwrap();
+        advance_vehicle(&mut app, 2);
+        assert!(app.world().resource::<VehiclePhysics>().error.is_some());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+        app.world_mut().run_system_once(controls).unwrap();
+        assert_eq!(
+            app.world().resource::<VehiclePhysics>().active_config,
+            valid
+        );
+        advance_vehicle(&mut app, 2);
+        assert_eq!(
+            app.world().resource::<VehiclePhysics>().active_config,
+            valid
+        );
+        assert!((truck_mass(&mut app) - valid.chassis.mass_kg).abs() < 0.01);
+    }
+
+    #[test]
+    fn mission_a_reset_uses_attached_equipment_clearance_and_keeps_the_child() {
+        use bevy::ecs::system::RunSystemOnce;
+        use vehicle::equipment_runtime::{EquipmentRequest, EquipmentRuntime, MountedEquipment};
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        let mut request = EquipmentRequest::demo();
+        request.catalog.definitions[0].local_pose.translation[1] = -4.0;
+        app.insert_resource(request)
+            .insert_resource(terrain::runtime::ActiveTerrain {
+                scene: terrain::scene::TerrainScene::reference(
+                    terrain::scene::ReferenceScene::Flat,
+                )
+                .unwrap(),
+                applied_revision: 1,
+                ..default()
+            })
+            .init_resource::<terrain::runtime::TerrainWorkshopState>()
+            .add_message::<AppExit>();
+        advance_vehicle(&mut app, 5);
+        let child = app
+            .world_mut()
+            .query_filtered::<Entity, With<MountedEquipment>>()
+            .single(app.world())
+            .unwrap();
+        let expected = terrain::runtime::checked_spawn_transform(
+            &app.world()
+                .resource::<terrain::runtime::ActiveTerrain>()
+                .scene,
+            app.world().resource::<VehiclePhysicsConfig>(),
+            app.world().resource::<EquipmentRuntime>().bounds(),
+        )
+        .unwrap();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+        app.world_mut().run_system_once(controls).unwrap();
+        assert!(
+            truck_position(&mut app).distance(expected.translation) < 1e-4,
+            "R ignores the installed collider bounds"
+        );
+        app.world_mut()
+            .run_system_once(vehicle::presentation::present)
+            .unwrap();
+        let owner = app
+            .world_mut()
+            .query_filtered::<Entity, With<Truck>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(
+            app.world()
+                .resource::<vehicle::presentation::VehiclePresentation>()
+                .pose_for(owner, Transform::IDENTITY),
+            expected
+        );
+        assert!(app.world().get_entity(child).is_ok());
+    }
+
+    #[test]
+    fn mission_a_telemetry_reports_effective_values_without_changing_the_profile() {
+        let mut app = vehicle_test_app(Quat::IDENTITY);
+        app.insert_resource(vehicle::equipment_runtime::EquipmentRequest::demo());
+        advance_vehicle(&mut app, 5);
+        let telemetry = app
+            .world()
+            .resource::<vehicle::telemetry::VehicleTelemetry>();
+        let effective = &app.world().resource::<VehiclePhysics>().active_config;
+        assert!((telemetry.effective_mass_kg - 1840.0).abs() < 0.01);
+        assert!(
+            telemetry
+                .effective_center_of_mass
+                .distance(Vec3::from_array(effective.chassis.center_of_mass))
+                < 1e-5
+        );
+        assert_eq!(
+            *app.world().resource::<VehiclePhysicsConfig>(),
+            VehiclePhysicsConfig::baseline()
         );
     }
 

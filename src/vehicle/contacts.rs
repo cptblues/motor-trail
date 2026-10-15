@@ -10,7 +10,11 @@ use bevy_rapier3d::rapier::{
     pipeline::{QueryFilter as RapierQueryFilter, QueryPipeline},
 };
 
+#[cfg(test)]
+mod allocation_tests;
+
 pub const MODEL_TIRE_HALF_WIDTH: f32 = 0.171;
+const MAX_COMPOUND_CHILD_QUERIES: usize = 64;
 
 #[derive(Clone, Copy)]
 pub struct WheelCast {
@@ -30,6 +34,9 @@ pub struct EnvelopeContact {
     pub normal: Vec3,
 }
 
+/// Rejected hits on flat compounds are retried per child within a fixed query budget.
+/// Nested composites are not traversed. TriMesh/heightfield queries still expose only
+/// their first hit, so a rejected feature can mask other support in the same collider.
 pub fn cast_envelope(queries: &QueryPipeline<'_>, wheel: WheelCast) -> Option<EnvelopeContact> {
     if !wheel.mount.is_finite()
         || !wheel.down.is_finite()
@@ -56,11 +63,20 @@ pub fn cast_envelope(queries: &QueryPipeline<'_>, wheel: WheelCast) -> Option<En
         Quat::from_rotation_arc(Vec3::Y, axle),
     );
     let shape = Cylinder::new(wheel.half_width, wheel.radius);
-    let mut rejected = Vec::new();
-    loop {
+    // Bound pathological overlapping scenes without heap scratch on each physics step.
+    const MAX_REJECTED: usize = 32;
+    let mut rejected = [ColliderHandle::invalid(); MAX_REJECTED];
+    let mut child_queries_left = MAX_COMPOUND_CHILD_QUERIES;
+    let mut best_contact = None;
+    let mut options = ShapeCastOptions {
+        // Initial overlaps are rejected without EPA's allocating penetration geometry.
+        compute_impact_geometry_on_penetration: false,
+        ..ShapeCastOptions::with_max_time_of_impact(offset + wheel.rest_length)
+    };
+    for count in 0..=MAX_REJECTED {
         // A ceiling/side hit must not hide admissible support on another collider.
         let accept = |handle, collider: &bevy_rapier3d::rapier::geometry::Collider| {
-            !rejected.contains(&handle)
+            !rejected[..count].contains(&handle)
                 && queries
                     .filter
                     .predicate
@@ -73,18 +89,50 @@ pub fn cast_envelope(queries: &QueryPipeline<'_>, wheel: WheelCast) -> Option<En
             },
             ..*queries
         };
-        let (collider, hit) = candidates.cast_shape(
-            &pose,
-            down,
-            &shape,
-            ShapeCastOptions::with_max_time_of_impact(offset + wheel.rest_length),
-        )?;
+        let Some((collider, hit)) = candidates.cast_shape(&pose, down, &shape, options) else {
+            return best_contact;
+        };
         if let Some(contact) = support_contact(wheel, down, axle, collider, hit) {
             return Some(contact);
         }
-        // Each iteration excludes one collider; the finite scene bounds this search.
-        rejected.push(collider);
+        // This parent already passed the complete caller filter in candidates.
+        let object = &queries.colliders[collider];
+        if let Some(compound) = object.shape().as_compound() {
+            let children = compound.shapes();
+            // Reject an oversized fallback in full, rather than selecting an arbitrary prefix.
+            if children.len() <= child_queries_left {
+                child_queries_left -= children.len();
+                for (child_pose, child_shape) in children {
+                    if child_shape.as_composite_shape().is_some() {
+                        continue;
+                    }
+                    let world_pose = object.position() * child_pose;
+                    let local_pose = world_pose.inv_mul(&pose);
+                    let local_down = world_pose.rotation.inverse() * down;
+                    let Ok(Some(child_hit)) = queries.dispatcher.cast_shapes(
+                        &local_pose,
+                        local_down,
+                        child_shape.as_ref(),
+                        &shape,
+                        options,
+                    ) else {
+                        continue;
+                    };
+                    let world_hit = child_hit.transform1_by(&world_pose);
+                    if let Some(contact) = support_contact(wheel, down, axle, collider, world_hit) {
+                        // Other children/colliders can still provide an earlier admissible hit.
+                        options.max_time_of_impact = child_hit.time_of_impact;
+                        best_contact = Some(contact);
+                    }
+                }
+            }
+        }
+        if count == MAX_REJECTED {
+            return best_contact;
+        }
+        rejected[count] = collider;
     }
+    best_contact
 }
 
 fn support_contact(
@@ -164,6 +212,13 @@ mod tests {
         wheel: WheelCast,
         obstacles: Vec<(Collider, Transform)>,
     ) -> Option<EnvelopeContact> {
+        measured_query(wheel, obstacles).0
+    }
+
+    fn measured_query(
+        wheel: WheelCast,
+        obstacles: Vec<(Collider, Transform)>,
+    ) -> (Option<EnvelopeContact>, usize) {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -188,12 +243,21 @@ mod tests {
         }
         app.world_mut()
             .run_system_once(move |context: ReadRapierContext| {
-                context
-                    .single()
-                    .unwrap()
-                    .with_query_pipeline(QueryFilter::default().exclude_sensors(), |pipeline| {
-                        cast_envelope(&pipeline.query_pipeline, wheel)
-                    })
+                context.single().unwrap().with_query_pipeline(
+                    QueryFilter::default().exclude_sensors(),
+                    |pipeline| {
+                        let result = cast_envelope(&pipeline.query_pipeline, wheel);
+                        let count = super::allocation_tests::count_allocations(|| {
+                            for _ in 0..32 {
+                                std::hint::black_box(cast_envelope(
+                                    &pipeline.query_pipeline,
+                                    wheel,
+                                ));
+                            }
+                        });
+                        (result, count)
+                    },
+                )
             })
             .unwrap()
     }
@@ -355,5 +419,60 @@ mod tests {
         .expect("A rejected ceiling must not hide the valid step contact");
         assert!((hit.length - expected.length).abs() < 0.004, "{hit:?}");
         assert!(hit.normal.y > 0.6 && hit.normal.z < -0.6, "{hit:?}");
+    }
+
+    #[test]
+    fn envelope_compound_ceiling_does_not_mask_step_support() {
+        let compound = Collider::compound(vec![
+            (
+                Vec3::new(0.0, 1.4, -0.4),
+                Quat::IDENTITY,
+                Collider::cuboid(1.0, 0.2, 1.0),
+            ),
+            (
+                Vec3::new(0.0, 0.125, 1.0),
+                Quat::IDENTITY,
+                Collider::cuboid(2.0, 0.125, 1.0),
+            ),
+        ]);
+        let (hit, allocations) = measured_query(wheel(), vec![(compound, Transform::IDENTITY)]);
+        let hit = hit.expect("An overlapping compound ceiling must not mask its step child");
+        let expected = 0.85 - (0.25 + (0.53_f32.powi(2) - 0.4_f32.powi(2)).sqrt());
+        assert!((hit.length - expected).abs() < 0.004, "{hit:?}");
+        assert!(
+            (hit.point.y - 0.25).abs() < 0.004 && hit.point.z.abs() < 0.004,
+            "{hit:?}"
+        );
+        assert!(hit.normal.y > 0.6 && hit.normal.z < -0.6, "{hit:?}");
+        assert_eq!(
+            allocations, 0,
+            "Repeated compound queries allocate heap memory"
+        );
+    }
+
+    #[test]
+    fn envelope_repeated_rejected_ceiling_queries_do_not_allocate() {
+        let (hit, allocations) = measured_query(
+            wheel(),
+            vec![
+                (
+                    Collider::cuboid(1.0, 0.2, 1.0),
+                    Transform::from_xyz(0.0, 1.4, -0.4),
+                ),
+                (
+                    Collider::cuboid(20.0, 0.5, 20.0),
+                    Transform::from_xyz(0.0, -0.5, 0.0),
+                ),
+                (
+                    Collider::cuboid(2.0, 0.125, 1.0),
+                    Transform::from_xyz(0.0, 0.125, 1.0),
+                ),
+            ],
+        );
+        assert!(hit.is_some());
+        assert_eq!(
+            allocations, 0,
+            "Repeated rejected support queries allocate heap memory"
+        );
     }
 }

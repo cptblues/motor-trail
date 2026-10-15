@@ -29,6 +29,9 @@ pub struct VehicleTelemetry {
     pub engine_force_n: f32,
     pub brake_force_n: f32,
     pub model: PhysicsModel,
+    pub effective_mass_kg: f32,
+    pub effective_center_of_mass: Vec3,
+    pub experimental_tires: bool,
     pub wheels: [WheelTelemetry; 4],
     previous_velocity: Option<Vec3>,
 }
@@ -80,6 +83,12 @@ pub fn sample_vehicle(
     telemetry.engine_force_n = physics.engine_force;
     telemetry.brake_force_n = physics.brake_force;
     telemetry.model = physics.active_config.model;
+    telemetry.effective_mass_kg = physics.active_config.chassis.mass_kg;
+    telemetry.effective_center_of_mass =
+        Vec3::from_array(physics.active_config.chassis.center_of_mass);
+    telemetry.experimental_tires = physics.controller.as_ref().is_some_and(|controller| {
+        controller.contact_mode() == super::wheel_backend::TireContactMode::Envelope
+    });
     for (i, contact) in physics.wheels.iter().enumerate() {
         let axle = car.rotation * Quat::from_rotation_y(contact.steer) * Vec3::NEG_X;
         let heading = contact.normal.cross(axle).normalize_or_zero();
