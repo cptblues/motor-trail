@@ -1,5 +1,7 @@
 pub mod config;
+pub mod contacts;
 pub mod controller;
+pub mod diagnostics;
 pub mod telemetry;
 pub mod visuals;
 
@@ -34,6 +36,7 @@ impl Plugin for VehiclePlugin {
             .add_systems(
                 FixedUpdate,
                 controller::suspension_and_drive
+                    .run_if(crate::terrain::runtime::driving_enabled)
                     .after(PhysicsSet::SyncBackend)
                     .before(PhysicsSet::StepSimulation),
             )

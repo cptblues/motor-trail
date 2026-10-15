@@ -1,22 +1,15 @@
 use std::collections::HashSet;
 
+pub use super::input_capture::UiInputCapture;
+use super::input_capture::{UiInputPlugin, UiInputSet};
 use bevy::input::keyboard::{Key, KeyboardFocusLost, KeyboardInput};
 use bevy::input::{ButtonState, InputSystems};
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPreUpdateSet, EguiPrimaryContextPass, egui};
 
 use crate::persistence::profiles::ProfileStore;
 use crate::vehicle::config::{PhysicsModel, VehiclePhysicsConfig};
 use crate::vehicle::telemetry::VehicleTelemetry;
-
-/// Read `pointer` for camera input and `keyboard` for driving input.
-/// An open panel does not, by itself, capture either device.
-#[derive(Resource, Default, Clone, Copy, Debug)]
-pub struct UiInputCapture {
-    pub pointer: bool,
-    pub keyboard: bool,
-}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum TuningTab {
@@ -63,10 +56,11 @@ impl Plugin for PhysicsTuningPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiInputCapture>()
             .init_resource::<PhysicsTuningState>()
+            .add_plugins(UiInputPlugin)
             .add_systems(
                 PreUpdate,
-                (toggle_tuning_window, refresh_input_capture)
-                    .chain()
+                toggle_tuning_window
+                    .before(UiInputSet)
                     .after(InputSystems)
                     .after(EguiPreUpdateSet::InitContexts)
                     .before(EguiPreUpdateSet::ProcessInput),
@@ -106,7 +100,6 @@ fn toggle_tuning_window(
     mut focus_lost: MessageReader<KeyboardFocusLost>,
     mut keys: Local<ToggleKeys>,
     mut state: ResMut<PhysicsTuningState>,
-    mut capture: ResMut<UiInputCapture>,
 ) {
     if focus_lost.read().count() > 0 {
         keys.held.clear();
@@ -122,63 +115,6 @@ fn toggle_tuning_window(
             state.open = !state.open;
         }
     }
-    if !state.open {
-        *capture = UiInputCapture::default();
-    }
-}
-
-fn release_keyboard_focus(ctx: &egui::Context) {
-    ctx.memory_mut(|memory| {
-        if let Some(id) = memory.focused() {
-            memory.surrender_focus(id);
-        }
-    });
-}
-
-fn refresh_input_capture(
-    mut contexts: EguiContexts,
-    state: Res<PhysicsTuningState>,
-    mut capture: ResMut<UiInputCapture>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    mut drag_in_ui: Local<Option<bool>>,
-) -> Result {
-    *capture = UiInputCapture::default();
-    let ctx = contexts.ctx_mut()?;
-    if !state.open {
-        *drag_in_ui = None;
-        release_keyboard_focus(ctx);
-        return Ok(());
-    }
-
-    // The primary egui pass runs in PostUpdate. Hit-test this frame's cursor
-    // against the previous layout before Update/FixedUpdate consume input.
-    let over_ui = windows
-        .single()
-        .ok()
-        .and_then(|window| {
-            window.cursor_position().map(|position| {
-                let scale = ctx.pixels_per_point() / window.scale_factor();
-                let position = egui::pos2(position.x / scale, position.y / scale);
-                ctx.layer_id_at(position)
-                    .is_some_and(|layer| layer.order != egui::Order::Background)
-            })
-        })
-        .unwrap_or(false);
-
-    let buttons = [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
-    let any_down = buttons.iter().any(|button| mouse.pressed(*button));
-    if buttons.iter().any(|button| mouse.just_pressed(*button)) && drag_in_ui.is_none() {
-        *drag_in_ui = Some(over_ui);
-    }
-    capture.pointer = if any_down {
-        drag_in_ui.unwrap_or(over_ui) || ctx.egui_is_using_pointer()
-    } else {
-        *drag_in_ui = None;
-        over_ui || ctx.egui_is_using_pointer()
-    };
-    capture.keyboard = ctx.egui_wants_keyboard_input() || ctx.any_popup_open();
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -194,16 +130,12 @@ enum ProfileAction {
 fn physics_tuning_ui(
     mut contexts: EguiContexts,
     mut state: ResMut<PhysicsTuningState>,
-    mut capture: ResMut<UiInputCapture>,
     mut config: ResMut<VehiclePhysicsConfig>,
     mut profiles: ResMut<ProfileStore>,
     telemetry: Option<Res<VehicleTelemetry>>,
 ) -> Result {
-    // Also clear capture when this schedule runs without an open panel.
-    *capture = UiInputCapture::default();
     let ctx = contexts.ctx_mut()?;
     if !state.open {
-        release_keyboard_focus(ctx);
         return Ok(());
     }
     if !state.initialized {
@@ -335,12 +267,6 @@ fn physics_tuning_ui(
             }
             Err(error) => state.edit_error = Some(error),
         }
-    }
-    if state.open {
-        capture.pointer = ctx.egui_wants_pointer_input();
-        capture.keyboard = ctx.egui_wants_keyboard_input() || ctx.any_popup_open();
-    } else {
-        release_keyboard_focus(ctx);
     }
     Ok(())
 }

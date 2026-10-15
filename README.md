@@ -29,13 +29,44 @@ La premiere compilation du moteur peut prendre plusieurs minutes.
 | Molette | Zoom |
 | C | Recentrer la camera |
 | `²` | Ouvrir / fermer l'atelier |
+| V | Afficher / masquer le diagnostic 3D des contacts des pneus |
 | Echap | Quitter |
 
 Le raccourci de l'atelier reconnait le caractere `²` et la position physique
 `KeyCode::Backquote`, a gauche de la touche 1 sur un clavier AZERTY courant.
 Il fonctionne aussi pendant l'edition d'une valeur, sans touche de fonction.
 
-## Atelier
+## Atelier Terrain
+
+`T` ouvre l'atelier Terrain hors saisie de texte ; `²` reste reserve aux
+reglages physiques. Passer explicitement en **Edition** pour generer, sculpter
+ou placer des objets, puis en **Conduite** pour essayer le resultat.
+
+L'atelier propose des terrains seedes (Plat, Vallee, Montagne, Trial), quatre
+brosses, cinq primitives, selection 3D et transformations numeriques, Undo/Redo,
+huit scenes de reference et des sauvegardes JSON exactes dans `configs/terrains/`.
+La vallee historique reste chargeable. Les profils du 4x4 sont conserves.
+
+En edition : clic gauche pour l'outil, clic droit pour l'orbite, clic molette
+pour deplacer la camera et molette pour zoomer. Ctrl+Z annule ; Ctrl+Y ou
+Ctrl+Maj+Z retablit. Le vehicule est immobilise puis replace au depart lors du
+retour en conduite, apres synchronisation des nouvelles collisions.
+
+### Apercu de placement
+
+L'outil **Placer** affiche la geometrie finale en transparence, sans collision :
+vert si la pose est valide, rouge hors terrain ou avec des dimensions invalides.
+L'apercu suit la souris et s'aligne sur le sol. Q tourne de -15 deg, E de +15 deg ;
+avec Maj, le pas est de 5 deg. Le lacet est conserve par primitive entre les poses.
+Les positions physiques Q/A sont acceptees pour les claviers QWERTY et AZERTY.
+Clic gauche confirme la pose affichee ; les clics dans l'interface ne posent rien.
+Clic droit ou Echap annule le placement et repasse en selection. Pendant le
+placement, Echap ne quitte pas le jeu et Q/E ne commandent pas le vehicule.
+
+Voir [Terrain Workshop](docs/terrain-workshop.md) pour les commandes, l'architecture,
+le format JSON, les limites de reconstruction et les extensions vers les chunks.
+
+## Atelier Physique
 
 La fenetre est deplacable et redimensionnable. Les onglets regroupent :
 
@@ -83,7 +114,23 @@ gere ressorts, amortisseurs, traction, freinage et friction limitee par la
 charge. Il est accessible dans la version Rapier embarquee par le plugin.
 Les calculs tournent a **120 Hz**, apres la synchronisation du backend et avant
 son integration, selon le [mode a pas fixe du plugin](https://rapier.rs/docs/user_guides/bevy_plugin/integration_parameters/).
-Un seul controleur applique des forces a chaque pas.
+Un seul controleur applique des forces a chaque pas. Le controleur Rapier reste
+intact : cette livraison ajoute le diagnostic et l'apercu de placement, pas
+une modification de la detection physique des roues.
+
+### Diagnostic 3D des pneus
+
+`V` affiche les centres physiques (blanc), le rayon et la largeur de gomme (cyan),
+les rayons descendants (rouge), les contacts utilises (orange) et les colliders
+des obstacles. Les marques vert clair montrent les contacts candidats du
+prototype de balayage volumetrique en lecture seule. Ils ne sont pas utilises
+par la suspension ou la motricite et n'appliquent aucune force.
+Les centres restent visibles a travers le modele dans ce mode de diagnostic.
+La touche est inactive pendant une saisie dans l'interface ; aucun profil n'est
+modifie. On peut aussi demarrer avec `cargo run --release -- --wheel-diagnostics`.
+Voir [Diagnostic des contacts](docs/wheel-contact-diagnosis.md) pour les mesures
+du GLB, la reproduction sur marche et la piste de correction differee. Le defaut
+de penetration des pneus reste present avec le controleur actuel.
 
 La version [Rapier 0.33-alpha embarquee](https://docs.rs/crate/rapier3d/0.33.0-alpha/source/src/control/ray_cast_vehicle_controller.rs)
 peut omettre sa limite longitudinale en ligne droite. L'adaptateur retire
@@ -143,18 +190,24 @@ compilation reussie ne constituent pas une validation des sensations de conduite
 
 ```text
 src/
-  main.rs                    vallee, modele, camera et commandes du jeu
+  main.rs                    modele, camera de conduite et commandes du jeu
+  terrain/                   generation, sculpture, scenes, objets et collisions
   vehicle/config.rs          parametres, unites, validation et references
   vehicle/controller.rs      Rapier / Origine et application en direct
+  vehicle/contacts.rs        requetes volumetriques de diagnostic, sans forces
+  vehicle/diagnostics.rs     centres, rayons, contacts et colliders (V)
   vehicle/visuals.rs          suspensions, direction et roulement du GLB
   vehicle/telemetry.rs        mesures et estimations
   ui/physics_tuning.rs        panneau, comparaison et capture des entrees
+  ui/terrain_workshop.rs      atelier terrain et commandes d'edition
+  ui/input_capture.rs         capture commune aux deux panneaux
   persistence/profiles.rs    JSON et dernier profil selectionne
 ```
 
 ## Verifier
 
 ```powershell
+cargo fmt --all -- --check
 cargo test
 cargo test --release
 cargo build --release

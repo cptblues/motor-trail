@@ -1,0 +1,26 @@
+{
+  "format": "motor-trail-terrain",
+  "format_version": 1,
+  "generator_version": 1,
+  "name": "Exemple Relief",
+  "terrain": {
+    "config": {
+      "preset": "Trial",
+      "seed": 42,
+      "width": 8.0,
+      "depth": 8.0,
+      "resolution": 4.0,
+      "amplitude": 0.0,
+      "frequency": 0.1,
+      "octaves": 4,
+      "persistence": 0.5,
+      "lacunarity": 2.0,
+      "roughness": 0.0
+    },
+    "cells_x": 2,
+    "cells_z": 2,
+    "heights": [0.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0]
+  },
+  "obstacles": [],
+  "spawn": { "position": [0.0, 0.375, -1.5], "yaw_degrees": 0.0 }
+}
