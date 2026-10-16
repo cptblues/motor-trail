@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::scene::{ReferenceScene, TerrainScene, validate_name};
+use super::compositions::Composition;
 
 const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -146,6 +147,79 @@ impl TerrainStore {
         }
         result
     }
+    fn composition_directory(&self) -> PathBuf {
+        self.root.join("compositions")
+    }
+
+    /// User compositions are versioned JSON within the same protected store root.
+    /// File names are validated with the terrain-scene rules.
+    pub fn list_compositions(&self) -> Result<Vec<String>, String> {
+        let root = self.composition_directory();
+        if !check_directory(&root, false)? { return Ok(Vec::new()); }
+        let mut names = Vec::new();
+        for entry in fs::read_dir(&root).map_err(|e| format!("Composition directory: {e}"))? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.extension().and_then(|v| v.to_str()) != Some("json") { continue; }
+            if !regular_file(&path)? { continue; }
+            if let Some(name) = path.file_stem().and_then(|v| v.to_str()) {
+                if validate_name(name).is_ok() { names.push(name.to_owned()); }
+            }
+        }
+        names.sort_by_key(|name| (name.to_ascii_lowercase(), name.clone()));
+        Ok(names)
+    }
+
+    pub fn load_composition(&self, name: &str) -> Result<Composition, String> {
+        validate_name(name)?;
+        let root = self.composition_directory();
+        if !check_directory(&root, false)? { return Err("Aucune composition sauvegardee".into()); }
+        let file_path = root.join(format!("{name}.json"));
+        if !regular_file(&file_path)? { return Err("Composition inexistante".into()); }
+        let file = File::open(&file_path).map_err(|e| format!("Lecture de composition: {e}"))?;
+        let length = file.metadata().map_err(|e| e.to_string())?.len();
+        if length > MAX_JSON_BYTES { return Err("Composition trop volumineuse".into()); }
+        let mut bytes = Vec::new();
+        file.take(MAX_JSON_BYTES + 1).read_to_end(&mut bytes)
+            .map_err(|e| format!("Lecture de composition: {e}"))?;
+        if bytes.len() as u64 > MAX_JSON_BYTES { return Err("Composition trop volumineuse".into()); }
+        let composition: Composition = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("JSON de composition invalide: {e}"))?;
+        composition.validate()?;
+        if composition.name != name { return Err("Nom de composition non concordant".into()); }
+        Ok(composition)
+    }
+
+    pub fn save_composition(&self, composition: &Composition) -> Result<(), String> {
+        composition.validate()?;
+        let root = self.composition_directory();
+        check_directory(&root, true)?;
+        let path = root.join(format!("{}.json", composition.name));
+        regular_file(&path)?;
+        // Never overwrite a user's composition silently. The UI gives an
+        // explicit choice of a new name instead.
+        if path.exists() { return Err("Une composition porte deja ce nom".into()); }
+        let mut bytes = serde_json::to_vec_pretty(composition).map_err(|e| e.to_string())?;
+        bytes.push(b'\n');
+        if bytes.len() as u64 > MAX_JSON_BYTES { return Err("Composition trop volumineuse".into()); }
+        let (temporary_path, mut temporary_file) = create_temporary(&root)?;
+        let result = (|| {
+            temporary_file.write_all(&bytes)
+                .and_then(|_| temporary_file.sync_all())
+                .map_err(|e| format!("Ecriture de composition: {e}"))?;
+            drop(temporary_file);
+            check_directory(&root, false)?;
+            if regular_file(&path)? { return Err("Composition deja existante".into()); }
+            fs::rename(&temporary_path, &path).map_err(|e| format!("Publication de composition: {e}"))?;
+            #[cfg(unix)]
+            File::open(&root).and_then(|dir| dir.sync_all())
+                .map_err(|e| format!("Composition sauvegardee mais sync incomplet: {e}"))?;
+            Ok(())
+        })();
+        let _ = fs::remove_file(&temporary_path);
+        result
+    }
+
 }
 
 fn reference_named(name: &str) -> Option<ReferenceScene> {
