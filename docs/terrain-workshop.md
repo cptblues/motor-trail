@@ -506,3 +506,24 @@ Defis, Ponts et Peindre : ils ne sont pas introduits ici car ils requierent
 leurs propres systemes, UX et validations. Les aspects artistiques precis
 (typographies, icones finales) et les miniatures des groupes feront partie
 d'une passe complementaire de design.
+
+### Mise au point ergonomique : modes, icones et catalogue redimensionnable
+
+- Le mode **Creation** s'identifie par son repere vert et son bouton
+  **Tester**. La conduite est un espace distinct : les rails, l'inspecteur et
+  la bibliotheque disparaissent. Un bandeau ambre **MODE CONDUITE** reste
+  visible et propose **Retour a la creation**. Le test conserve la camera et
+  la physique du vehicule existantes ; aucune edition n'est possible tant
+  que la conduite est active.
+- Les categories Terrain, Sculpter, Objets, Scenes ainsi que les commandes
+  de sauvegarde, test et objets disposent de pictogrammes vectoriels dessines
+  directement par egui. Aucune fonte ou ressource supplementaire n'est
+  requise pour les archives Windows/macOS.
+- La bibliotheque basse s'affiche **uniquement dans Objets** sur grand ecran.
+  Les boutons **1 objet / En serie** et les raccourcis de pose sont au-dessus
+  de la galerie ; ils restent accessibles en permanence. Le redimensionnement
+  respecte une hauteur minimale calculée qui empeche les controles de sortie
+  de zone. En mode Terrain/Sculpter/Scenes, la vue 3D retrouve la place basse.
+- Sous 1000 points logiques, le bandeau utilise des actions de creation et de
+  test compactes ; les onglets restent visibles au-dessus de l'inspecteur
+  inferieur, sans deverser toute la navigation sur plusieurs lignes.
