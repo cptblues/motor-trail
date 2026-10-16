@@ -18,7 +18,10 @@ use crate::vehicle::equipment_runtime::EquipmentRuntime;
 use crate::vehicle::telemetry::VehicleTelemetry;
 use crate::vehicle::{Truck, VehiclePhysics, VehicleVisualState};
 mod nature_smoke;
+mod manipulation;
 mod placement_preview;
+pub use manipulation::GizmoMode;
+use manipulation::{GizmoGesture, ManipulationPreview};
 mod smoke;
 use placement_preview::PlacementPreview;
 
@@ -83,6 +86,14 @@ pub struct TerrainWorkshopState {
     pub object_kind: ObstacleKind,
     pub object_size: [f32; 3],
     pub placement_mode: PlacementMode,
+    pub placement_follow_ground: bool,
+    pub placement_offset_y: f32,
+    pub gizmo_mode: GizmoMode,
+    pub snap_enabled: bool,
+    pub snap_objects: bool,
+    pub snap_grid: f32,
+    pub snap_angle: f32,
+    pub uniform_scale: bool,
     placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
     pub scene_name: String,
@@ -105,6 +116,14 @@ impl Default for TerrainWorkshopState {
             object_kind: ObstacleKind::Rock,
             object_size: [2.0, 1.0, 2.0],
             placement_mode: PlacementMode::Single,
+            placement_follow_ground: true,
+            placement_offset_y: 0.0,
+            gizmo_mode: GizmoMode::Move,
+            snap_enabled: false,
+            snap_objects: true,
+            snap_grid: 0.5,
+            snap_angle: 15.0,
+            uniform_scale: false,
             placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
             scene_name: "Mon terrain".into(),
@@ -211,6 +230,8 @@ impl Plugin for TerrainPlugin {
             .init_resource::<EditorGesture>()
             .init_resource::<EditorCamera>()
             .init_resource::<PlacementPreview>()
+            .init_resource::<GizmoGesture>()
+            .init_resource::<ManipulationPreview>()
             .init_resource::<ButtonInput<MouseButton>>()
             .add_systems(Startup, refresh_files)
             .add_systems(
@@ -228,7 +249,8 @@ impl Plugin for TerrainPlugin {
             .add_systems(Update, draw_editor.after(editor_camera))
             .add_systems(
                 PostUpdate,
-                placement_preview::render
+                (placement_preview::render, manipulation::render)
+                    .chain()
                     .after(bevy_egui::EguiPostUpdateSet::EndPass)
                     .before(bevy::transform::TransformSystems::Propagate),
             )
@@ -575,10 +597,24 @@ fn editor_interaction(
     mut sync: ResMut<TerrainSync>,
     mut gesture: ResMut<EditorGesture>,
     mut preview: ResMut<PlacementPreview>,
+    mut manipulation: ResMut<GizmoGesture>,
 ) {
     preview.invalidate();
     gesture.center = None;
     let focused = windows.single().is_ok_and(|window| window.focused);
+    // Resolve camera/pointer even if the cursor leaves the window: an active
+    // gizmo must still see release/cancel rather than getting stuck dragging.
+    let pointer_ray = windows.single().ok()
+        .and_then(|window| window.cursor_position())
+        .and_then(|position| cameras.single().ok()
+            .and_then(|(camera, transform)| camera.viewport_to_world(transform, position).ok()));
+    let camera_eye = cameras.single().map_or(Vec3::ZERO, |(_, pose)| pose.translation());
+    if manipulation::interact(
+        &mut manipulation, &mut state, &mut active, &mut sync,
+        &capture, &mouse, &mut keys, focused, pointer_ray, camera_eye,
+    ) {
+        return;
+    }
     if state.mode == WorkshopMode::Edit && focused && state.tool == EditorTool::Place {
         state.cursor = None;
         let escape = !capture.keyboard && keys.just_pressed(KeyCode::Escape);
@@ -811,7 +847,13 @@ fn editor_camera(
     }
 }
 
-fn draw_editor(state: Res<TerrainWorkshopState>, active: Res<ActiveTerrain>, mut gizmos: Gizmos) {
+fn draw_editor(
+    state: Res<TerrainWorkshopState>,
+    active: Res<ActiveTerrain>,
+    manipulation: Res<GizmoGesture>,
+    cameras: Query<&GlobalTransform, With<crate::ChaseCamera>>,
+    mut gizmos: Gizmos,
+) {
     if state.mode != WorkshopMode::Edit {
         return;
     }
@@ -832,18 +874,20 @@ fn draw_editor(state: Res<TerrainWorkshopState>, active: Res<ActiveTerrain>, mut
             gizmos.cross(point + Vec3::Y * 0.08, 0.3, Color::WHITE);
         }
     }
-    if let Some(object) = active
+    if let Some(object) = manipulation.candidate.as_ref().or_else(|| active
         .scene
         .obstacles
         .iter()
-        .find(|item| Some(item.id) == state.selected)
+        .find(|item| Some(item.id) == state.selected))
     {
         gizmos.cube(
-            object
-                .transform()
+            object.transform()
                 .with_scale(Vec3::from_array(object.size) + Vec3::splat(0.06)),
             Color::srgb(0.95, 0.75, 0.12),
         );
+    }
+    if let Ok(camera) = cameras.single() {
+        manipulation::draw(&mut gizmos, &state, &active, &manipulation, camera.translation());
     }
     let spawn = Vec3::from_array(active.scene.spawn.position);
     gizmos.arrow(
