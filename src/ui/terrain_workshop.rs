@@ -702,7 +702,7 @@ fn toolbar(
     ui.horizontal_wrapped(|ui| -> [egui::Response; 2] {
         for (mode, label) in [
             (WorkshopMode::Edit, "Edition"),
-            (WorkshopMode::Drive, "Conduite"),
+            (WorkshopMode::Drive, "▶ Tester"),
         ] {
             if ui.selectable_label(controls.mode == mode, label).clicked() && controls.mode != mode
             {
