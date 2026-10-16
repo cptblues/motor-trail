@@ -21,7 +21,8 @@ mod nature_smoke;
 mod manipulation;
 mod placement_preview;
 pub use manipulation::GizmoMode;
-use manipulation::{GizmoGesture, ManipulationPreview};
+pub(crate) use manipulation::GizmoGesture;
+use manipulation::ManipulationPreview;
 mod smoke;
 use placement_preview::PlacementPreview;
 
