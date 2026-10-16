@@ -447,6 +447,40 @@ fn show_workshop(
     let active = egui::Color32::from_rgb(98, 226, 155);
     let mut bounds = [None; 4];
 
+    // Distinct play-test workspace. Do not show the edit rails/shelf or
+    // inspectors while driving: only an unmistakable way back to creation.
+    if controls.mode == WorkshopMode::Drive {
+        bounds[0] = Some(egui::Panel::top("motor_trail_drive_status")
+            .resizable(false)
+            .default_size(54.0)
+            .show(&mut root, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(42, 49, 42))
+                    .inner_margin(egui::Margin::same(9))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("● MODE CONDUITE")
+                                .strong().color(egui::Color32::from_rgb(244, 208, 125))
+                                .size(15.0));
+                            ui.separator();
+                            if ui.add(egui::Button::new(
+                                egui::RichText::new("✎  RETOUR À LA CRÉATION").strong()
+                            ).fill(egui::Color32::from_rgb(37, 104, 79))).clicked() {
+                                enqueue(&mut action, WorkshopAction::SetMode(WorkshopMode::Edit));
+                            }
+                            if wide {
+                                ui.label("Test du parcours · physique du véhicule active");
+                            }
+                            if ui.small_button("Masquer [T]").clicked() { open = false; }
+                        });
+                    });
+            }).response.rect);
+        local.bounds = bounds;
+        controls.open = open;
+        local.commit(ctx, state, &mut controls, &mut draft, action);
+        return bounds[0];
+    }
+
     // Command bar: only existing, working gameplay/editor modes are shown.
     bounds[0] = Some(egui::Panel::top("motor_trail_builder_commands")
         .resizable(false)
@@ -461,8 +495,8 @@ fn show_workshop(
                             .size(18.0).strong().color(active));
                         ui.separator();
                         if wide {
-                            ui.label(egui::RichText::new("ÉDITEUR DE MAP")
-                                .small().color(egui::Color32::LIGHT_GRAY));
+                            ui.label(egui::RichText::new("● MODE CRÉATION")
+                                .small().strong().color(active));
                         }
                         for (tab, label) in [
                             (WorkshopTab::Generation, "Terrain"),
@@ -482,7 +516,8 @@ fn show_workshop(
                         ui.separator();
                         if wide { ui.label(view.scene_name); }
                         let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
-                        if ui.button("Sauvegarder").clicked() {
+                        if ui.add(egui::Button::new("◈ Sauvegarder")
+                            .fill(egui::Color32::from_rgb(35, 92, 71))).clicked() {
                             if view.file.is_some() {
                                 enqueue(&mut action, WorkshopAction::Save);
                             } else if files.iter().any(|name|
@@ -609,28 +644,33 @@ fn show_workshop(
             }).response.rect);
         bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_asset_shelf")
             .resizable(true)
-            .default_size(201.0)
-            .min_size(105.0)
-            .max_size((screen.height() * 0.42).max(160.0))
+            .default_size(226.0)
+            .min_size(builder_shelf_min_height(screen.height()))
+            .max_size((screen.height() * 0.42).max(210.0))
             .show(&mut root, |ui| {
                 ui.visuals_mut().panel_fill = background;
                 egui::Frame::new().fill(background)
                     .inner_margin(egui::Margin::same(9))
                     .show(ui, |ui| {
                         if draft.tab == WorkshopTab::Objects {
+                            // Put critical controls ABOVE the thumbnail scroll.
+                            // Even at the smallest allowed height they remain
+                            // reachable; thumbnails can scroll independently.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(egui::RichText::new("PLACER").strong().color(active));
+                                ui.selectable_value(&mut controls.placement_mode,
+                                    PlacementMode::Single, "1 objet");
+                                ui.selectable_value(&mut controls.placement_mode,
+                                    PlacementMode::Multiple, "En série");
+                                ui.small("Q/E : orienter · Échap : terminer");
+                            });
+                            ui.separator();
                             if let Some(kind) = super::terrain_catalogue::catalogue_strip(
                                 ui, controls.object_kind, &mut draft.asset_query,
                                 &mut draft.asset_category,
                             ) {
                                 controls.choose_kind(kind);
                             }
-                            ui.horizontal_wrapped(|ui| {
-                                ui.selectable_value(&mut controls.placement_mode,
-                                    PlacementMode::Single, "Pose unique");
-                                ui.selectable_value(&mut controls.placement_mode,
-                                    PlacementMode::Multiple, "Pose multiple");
-                                ui.label("Cliquer un modèle puis cliquer dans la scène");
-                            });
                         } else {
                             ui.strong("MOTOR TRAIL  •  ATELIER");
                             ui.separator();
@@ -690,6 +730,12 @@ fn show_workshop(
     controls.open = open;
     local.commit(ctx, state, &mut controls, &mut draft, action);
     if wide { bounds[2] } else { bounds[3] }
+}
+
+/// The complete shelf contains a placement row, search/categories and a
+/// 121-point thumbnail strip. Never offer a resize height that clips the row.
+fn builder_shelf_min_height(viewport_height: f32) -> f32 {
+    (viewport_height * 0.34).min(203.0).max(172.0)
 }
 
 fn toolbar(
