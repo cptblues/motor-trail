@@ -458,7 +458,11 @@ fn show_workshop(
                     enqueue(&mut action, WorkshopAction::SaveAs(controls.scene_name.clone()));
                 }
             }
-            ui.label(if view.file.is_some() { "Map enregistree" } else { "Map non sauvegardee" });
+            if let Some(file) = view.file {
+                ui.small(format!("Fichier : {file}"));
+            } else {
+                ui.small("Pas encore de fichier");
+            }
         });
         if !status.is_empty() {
             ui.label(&status);
@@ -941,13 +945,17 @@ fn sculpture(ui: &mut egui::Ui, controls: &mut Controls) {
         0.01..=20.0,
         true,
     );
-    slider_control(
-        ui,
-        "Exposant de retombee",
-        &mut controls.brush.falloff,
-        0.1..=4.0,
-        false,
-    );
+    egui::CollapsingHeader::new("Avance : forme du pinceau")
+        .default_open(false)
+        .show(ui, |ui| {
+            slider_control(
+                ui,
+                "Exposant de retombee",
+                &mut controls.brush.falloff,
+                0.1..=4.0,
+                false,
+            );
+        });
     if controls.brush.kind == BrushKind::Flatten {
         float_control(
             ui,
@@ -2025,6 +2033,15 @@ mod tests {
     }
 
     #[test]
+    fn responsive_dock_defaults_to_side_and_allows_explicit_bottom() {
+        assert!(EditorDock::Auto.is_right(1440.0));
+        assert!(!EditorDock::Auto.is_right(720.0));
+        assert!(!EditorDock::Right.is_right(360.0));
+        assert!(EditorDock::Right.is_right(900.0));
+        assert!(!EditorDock::Bottom.is_right(2560.0));
+    }
+
+    #[test]
     fn all_tabs_render_at_desktop_and_narrow_sizes_without_mutating_live_values() {
         for size in [egui::vec2(1440.0, 900.0), egui::vec2(360.0, 740.0)] {
             for tab in WorkshopTab::ALL {
@@ -2078,7 +2095,15 @@ mod tests {
                 }
                 discard_output(output);
                 assert!(passes >= 2);
-                assert!(rect.is_some());
+                let rect = rect.expect("visible docked editor");
+                assert!(rect.is_finite());
+                if size.x >= 880.0 {
+                    assert!(rect.width() < size.x * 0.6, "dock must leave the world visible: {rect:?}");
+                    assert!(rect.right() >= size.x - 8.0, "dock should remain on the right: {rect:?}");
+                } else {
+                    assert!(rect.height() < size.y * 0.75, "bottom dock should leave the terrain visible: {rect:?}");
+                    assert!(rect.bottom() >= size.y - 8.0, "bottom dock should stay anchored: {rect:?}");
+                }
                 assert_eq!(state.draft, expected);
                 assert!(state.actions.is_empty());
             }
