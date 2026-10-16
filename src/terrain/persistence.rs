@@ -10,15 +10,9 @@ use super::scene::{ReferenceScene, TerrainScene, validate_name};
 const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
 static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug)]
+#[derive(bevy::prelude::Resource, Clone, Debug)]
 pub struct TerrainStore {
     pub root: PathBuf,
-}
-
-impl Default for TerrainStore {
-    fn default() -> Self {
-        Self::new("configs/terrains")
-    }
 }
 
 impl TerrainStore {

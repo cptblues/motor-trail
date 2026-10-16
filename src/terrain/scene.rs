@@ -288,7 +288,7 @@ pub(super) fn validate_obstacles(obstacles: &[Obstacle]) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn validate_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name.len() > 64
         || name.trim() != name

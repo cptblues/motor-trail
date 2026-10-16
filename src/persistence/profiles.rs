@@ -196,7 +196,7 @@ impl ProfileStore {
     }
 }
 
-fn validate_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty() || name.len() > 64 || name.trim() != name {
         return Err(
             "Profile name must contain 1..=64 ASCII characters without leading or trailing spaces"
