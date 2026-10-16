@@ -259,6 +259,14 @@ pub(super) fn catalogue_strip(
         ui.add(egui::TextEdit::singleline(query)
             .hint_text("Rechercher un arbre, une roche…")
             .desired_width(215.0));
+        for label in ["Toutes", "Arbres", "Rochers", "Bois"] {
+            if ui.selectable_label(
+                (filter.is_empty() && label == "Toutes") || filter == label,
+                label,
+            ).clicked() {
+                *filter = label.to_owned();
+            }
+        }
         egui::ComboBox::from_id_salt("asset_shelf_category")
             .selected_text(if filter.is_empty() { "Toutes" } else { filter.as_str() })
             .show_ui(ui, |ui| {
