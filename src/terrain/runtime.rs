@@ -1744,10 +1744,14 @@ mod tests {
         let drag_right = editor_pan_delta(yaw, 25.0, Vec2::X * 30.0, false);
         let drag_down = editor_pan_delta(yaw, 25.0, Vec2::Y * 30.0, false);
         assert!(drag_right.x > 0.0);
-        assert!(drag_down.z < 0.0);
+        assert!(drag_down.z > 0.0, "dragging down must move the scenery down");
         let old = editor_pan_delta(yaw, 25.0, Vec2::new(30.0, 10.0), true);
         let new = editor_pan_delta(yaw, 25.0, Vec2::new(30.0, 10.0), false);
-        assert!((old + new).length() < 1e-6);
+        assert_eq!(old.z, new.z, "legacy only restores the original horizontal direction");
+        assert_eq!(old.x, -new.x);
+        let yaw_90 = editor_pan_delta(std::f32::consts::FRAC_PI_2,
+            25.0, Vec2::X * 30.0, false);
+        assert!(yaw_90.z < 0.0, "horizontal screen drag must track orbit angle");
         assert_eq!(editor_pan_delta(yaw, 25.0, Vec2::ZERO, false), Vec3::ZERO);
         assert_eq!(editor_pan_delta(yaw, 25.0, Vec2::X, false).y, 0.0);
         assert!(!TerrainWorkshopState::default().legacy_pan_direction);
