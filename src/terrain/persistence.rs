@@ -378,6 +378,28 @@ mod tests {
     }
 
     #[test]
+    fn composition_library_roundtrips_rejects_duplicates_and_unsafe_files() {
+        use crate::terrain::compositions::Composition;
+        use crate::terrain::obstacles::{Obstacle, ObstacleKind};
+        let dir = TestDir::new();
+        let store = TerrainStore::new(&dir.0);
+        assert!(store.list_compositions().unwrap().is_empty());
+        let objects = vec![1, 2].into_iter().map(|id| Obstacle {
+            id, kind: ObstacleKind::Cube, position: [id as f32 * 2.0, 1.0, 0.0],
+            size: [2.0; 3], rotation_degrees: [0.0; 3],
+        }).collect::<Vec<_>>();
+        let component = Composition::from_selection("Pont de bois", &objects).unwrap();
+        store.save_composition(&component).unwrap();
+        assert_eq!(store.list_compositions().unwrap(), vec!["Pont de bois"]);
+        assert_eq!(store.load_composition("Pont de bois").unwrap(), component);
+        assert!(store.save_composition(&component).is_err(), "existing user composition must not be overwritten");
+        assert!(store.load_composition("../Pont de bois").is_err());
+        let others = store.load_composition("Pont de bois").unwrap()
+            .instantiate(bevy::prelude::Vec3::new(12.0, 3.0, 4.0), &objects).unwrap();
+        assert!(others.iter().all(|object| object.id > 2));
+    }
+
+    #[test]
     fn save_as_roundtrips_edited_heights_objects_spawn_and_replaces_file() {
         let dir = TestDir::new();
         let store = TerrainStore::new(&dir.0);
