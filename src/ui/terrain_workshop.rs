@@ -2457,6 +2457,24 @@ mod tests {
                 if let Some(rect) = rect { assert!(rect.is_finite()); }
                 assert_eq!(state.draft, expected);
                 assert!(state.actions.is_empty());
+
+                // Switching to drive must collapse the editor to ONE thin
+                // status bar, regardless of which creation tab was selected.
+                state.mode = WorkshopMode::Drive;
+                let drive_output = ctx.run_ui(input(vec![], size), |ui| {
+                    show_workshop(ui.ctx(), &mut state, &view, &mut local);
+                });
+                assert!(local.bounds[0].is_some(), "drive status must be visible");
+                assert!(local.bounds[1..].iter().all(Option::is_none),
+                    "drive must not display creation tools or asset shelf");
+                let drive_marked = drive_output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape,
+                        egui::epaint::Shape::Text(text)
+                            if text.galley.text().contains("MODE CONDUITE"))
+                });
+                assert!(drive_marked, "driving mode needs an explicit title");
+                assert!(state.actions.is_empty());
+                discard_output(drive_output);
             }
         }
     }
