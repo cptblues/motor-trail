@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use super::brush::{Brush, HeightChange, apply_brush};
+use super::compositions::{Composition, ObjectGroup, expanded_selection, next_group_id, prune_groups};
 use super::config::{TerrainConfig, TerrainPreset};
 use super::history::{EditHistory, EditOperation};
 use super::obstacles::{Obstacle, ObstacleKind};
@@ -73,6 +74,13 @@ pub enum WorkshopAction {
     DeleteObject(u64),
     DuplicateObject(u64),
     AlignObject(u64),
+    GroupSelection(String),
+    UngroupSelection,
+    DeleteSelection,
+    DuplicateSelection,
+    SaveComposition(String),
+    InsertComposition(String, [f32; 3]),
+    RefreshCompositions,
     SetSpawn(VehicleSpawn),
     MoveVehicleToSpawn,
 }
@@ -97,6 +105,8 @@ pub struct TerrainWorkshopState {
     pub uniform_scale: bool,
     placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
+    pub selected_ids: Vec<u64>,
+    pub compositions: Vec<String>,
     pub scene_name: String,
     pub file_selection: String,
     pub files: Vec<String>,
@@ -127,6 +137,8 @@ impl Default for TerrainWorkshopState {
             uniform_scale: false,
             placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
+            selected_ids: Vec::new(),
+            compositions: Vec::new(),
             scene_name: "Mon terrain".into(),
             file_selection: String::new(),
             files: Vec::new(),
@@ -139,6 +151,32 @@ impl Default for TerrainWorkshopState {
 }
 
 impl TerrainWorkshopState {
+    pub fn selection(&self) -> Vec<u64> {
+        if self.selected_ids.is_empty() {
+            self.selected.into_iter().collect()
+        } else {
+            self.selected_ids.clone()
+        }
+    }
+
+    /// Expand a group atomically, and toggle only whole groups.
+    fn pick_selection(&mut self, id: Option<u64>, shift: bool, groups: &[ObjectGroup]) {
+        let members = id.map(|id| expanded_selection(id, groups)).unwrap_or_default();
+        if shift && !members.is_empty() {
+            let remove = members.iter().all(|id| self.selection().contains(id));
+            let mut current = self.selection();
+            if remove { current.retain(|id| !members.contains(id)); }
+            else { for member in &members {
+                if !current.contains(member) { current.push(*member); }
+            }}
+            self.selected_ids = current;
+            self.selected = self.selected_ids.last().copied();
+        } else {
+            self.selected_ids = members;
+            self.selected = self.selected_ids.last().copied();
+        }
+    }
+
     pub fn placement_yaw_degrees(&self, kind: ObstacleKind) -> f32 {
         self.placement_yaw_degrees[placement_preview::kind_index(kind)]
     }
@@ -311,10 +349,8 @@ fn shortcuts(
     if control && keys.just_pressed(KeyCode::KeyY) {
         state.actions.push(WorkshopAction::Redo);
     }
-    if keys.just_pressed(KeyCode::Delete) {
-        if let Some(id) = state.selected {
-            state.actions.push(WorkshopAction::DeleteObject(id));
-        }
+    if keys.just_pressed(KeyCode::Delete) && !state.selection().is_empty() {
+        state.actions.push(WorkshopAction::DeleteSelection);
     }
 }
 
@@ -359,6 +395,7 @@ fn install_scene(
         "Mon terrain".into()
     };
     state.selected = None;
+    state.selected_ids.clear();
     state.mode = WorkshopMode::Edit;
     state.cursor = None;
     camera.focus = Vec3::from_array(scene.spawn.position) + Vec3::Z * 12.0;
@@ -496,6 +533,93 @@ fn apply_action(
         WorkshopAction::RefreshFiles => {
             state.files = store.list()?;
         }
+        WorkshopAction::RefreshCompositions => {
+            state.compositions = store.list_compositions()?;
+        }
+        WorkshopAction::SaveComposition(name) => {
+            let selected = state.selection();
+            let objects: Vec<_> = active.scene.obstacles.iter()
+                .filter(|o| selected.contains(&o.id)).cloned().collect();
+            let composition = Composition::from_selection(&name, &objects)?;
+            store.save_composition(&composition)?;
+            state.compositions = store.list_compositions()?;
+            state.status = format!("Composition {name} sauvegardee");
+        }
+        WorkshopAction::InsertComposition(name, position) => {
+            if state.mode != WorkshopMode::Edit { return Err("Passer en mode Edition".into()); }
+            let composition = store.load_composition(&name)?;
+            let clones = composition.instantiate(Vec3::from_array(position), &active.scene.obstacles)?;
+            let ids: Vec<_> = clones.iter().map(|o| o.id).collect();
+            let mut objects = active.scene.obstacles.clone();
+            objects.extend(clones);
+            let mut groups = active.scene.groups.clone();
+            groups.push(ObjectGroup { id: next_group_id(&groups), name, members: ids.clone() });
+            commit_scene_objects(objects, groups, active, sync)?;
+            state.selected_ids = ids;
+            state.selected = state.selected_ids.last().copied();
+            state.tool = EditorTool::Select;
+        }
+        WorkshopAction::GroupSelection(name) => {
+            if state.mode != WorkshopMode::Edit { return Err("Passer en mode Edition".into()); }
+            super::scene::validate_name(&name)?;
+            let ids = state.selection();
+            if ids.len() < 2 { return Err("Selectionner au moins deux objets".into()); }
+            if active.scene.groups.iter().any(|g| g.members.iter().any(|id| ids.contains(id))) {
+                return Err("Degrouper les objets existants avant de regrouper".into());
+            }
+            if ids.iter().any(|id| !active.scene.obstacles.iter().any(|o| o.id == *id)) {
+                return Err("Selection contenant un objet introuvable".into());
+            }
+            let mut groups = active.scene.groups.clone();
+            groups.push(ObjectGroup { id: next_group_id(&groups), name, members: ids });
+            commit_scene_objects(active.scene.obstacles.clone(), groups, active, sync)?;
+        }
+        WorkshopAction::UngroupSelection => {
+            if state.mode != WorkshopMode::Edit { return Err("Passer en mode Edition".into()); }
+            let selected = state.selection();
+            let groups = active.scene.groups.iter().filter(|g|
+                !g.members.iter().any(|id| selected.contains(id))).cloned().collect();
+            commit_scene_objects(active.scene.obstacles.clone(), groups, active, sync)?;
+        }
+        WorkshopAction::DeleteSelection => {
+            if state.mode != WorkshopMode::Edit { return Err("Passer en mode Edition".into()); }
+            let selection = state.selection();
+            let objects = active.scene.obstacles.iter()
+                .filter(|o| !selection.contains(&o.id)).cloned().collect();
+            commit_objects(objects, active, sync)?;
+            state.selected = None;
+            state.selected_ids.clear();
+        }
+        WorkshopAction::DuplicateSelection => {
+            if state.mode != WorkshopMode::Edit { return Err("Passer en mode Edition".into()); }
+            let selection = state.selection();
+            let mut objects = active.scene.obstacles.clone();
+            let originals: Vec<_> = objects.iter()
+                .filter(|o| selection.contains(&o.id)).cloned().collect();
+            if originals.is_empty() { return Err("Aucun objet selectionne".into()); }
+            if objects.len() + originals.len() > super::scene::MAX_OBSTACLES {
+                return Err("Limite de 512 objets atteinte".into());
+            }
+            let mut ids = Vec::new();
+            for mut item in originals {
+                // Reserve each stable ID before allocating the next.
+                let id = objects.iter().map(|o| o.id).max().unwrap_or(0)
+                    .checked_add(1)
+                    .unwrap_or_else(|| (1u64..).find(|id| objects.iter().all(|o| o.id != *id)).unwrap());
+                item.id = id;
+                item.position[0] += 3.0;
+                item.validate()?;
+                ids.push(id);
+                objects.push(item);
+            }
+            let mut groups = active.scene.groups.clone();
+            if ids.len() > 1 {
+                groups.push(ObjectGroup { id: next_group_id(&groups), name: "Copie".into(), members: ids.clone() });
+            }
+            commit_scene_objects(objects, groups, active, sync)?;
+            state.selected_ids = ids;
+            state.selected = state.selected_ids.last().copied();
+        }
         WorkshopAction::Undo | WorkshopAction::Redo => {
             let changed = if matches!(action, WorkshopAction::Undo) {
                 active.history.undo(&mut active.scene)
@@ -503,6 +627,10 @@ fn apply_action(
                 active.history.redo(&mut active.scene)
             };
             if changed {
+                state.selected_ids.retain(|id| active.scene.obstacles.iter().any(|o| o.id == *id));
+                if state.selected.is_some_and(|id| !active.scene.obstacles.iter().any(|o| o.id == id)) {
+                    state.selected = state.selected_ids.last().copied();
+                }
                 mark_terrain(active, sync);
                 sync.objects_dirty = true;
                 sync.reset_pending = true;
@@ -541,6 +669,7 @@ fn apply_action(
                 WorkshopAction::DeleteObject(id) => {
                     objects.retain(|item| item.id != id);
                     state.selected = None;
+                    state.selected_ids.clear();
                 }
                 WorkshopAction::DuplicateObject(id) => {
                     let mut copy = objects
@@ -552,6 +681,7 @@ fn apply_action(
                     copy.position[0] += copy.size[0] + 0.25;
                     copy.align_to_ground(&active.scene.terrain)?;
                     state.selected = Some(copy.id);
+                    state.selected_ids = vec![copy.id];
                     objects.push(copy);
                 }
                 WorkshopAction::AlignObject(id) => {
@@ -574,18 +704,40 @@ fn commit_objects(
     active: &mut ActiveTerrain,
     sync: &mut TerrainSync,
 ) -> Result<(), String> {
+    let groups = prune_groups(&active.scene.groups, &objects);
+    commit_scene_objects(objects, groups, active, sync)
+}
+
+/// Atomically publish geometry AND non-destructive membership metadata.
+fn commit_scene_objects(
+    objects: Vec<Obstacle>,
+    groups: Vec<ObjectGroup>,
+    active: &mut ActiveTerrain,
+    sync: &mut TerrainSync,
+) -> Result<(), String> {
     let mut candidate = active.scene.clone();
     candidate.obstacles = objects;
+    candidate.groups = groups;
     candidate.validate()?;
     for object in &candidate.obstacles {
         object.build_rendered()?;
     }
-    if candidate.obstacles != active.scene.obstacles {
-        active.history.push(EditOperation::Objects {
-            before: active.scene.obstacles.clone(),
-            after: candidate.obstacles.clone(),
-        });
+    if candidate.obstacles != active.scene.obstacles || candidate.groups != active.scene.groups {
+        if candidate.groups == active.scene.groups {
+            active.history.push(EditOperation::Objects {
+                before: active.scene.obstacles.clone(),
+                after: candidate.obstacles.clone(),
+            });
+        } else {
+            active.history.push(EditOperation::ObjectsGroups {
+                before: active.scene.obstacles.clone(),
+                after: candidate.obstacles.clone(),
+                groups_before: active.scene.groups.clone(),
+                groups_after: candidate.groups.clone(),
+            });
+        }
         active.scene.obstacles = candidate.obstacles;
+        active.scene.groups = candidate.groups;
         active.revision += 1;
         sync.objects_dirty = true;
         sync.reset_pending = true;
@@ -725,8 +877,10 @@ fn editor_interaction(
                         }
                     }
                 }
-                state.selected = unoccluded_hit(obstacle_hit, hit)
+                let target = unoccluded_hit(obstacle_hit, hit)
                     .and_then(|entity| objects.get(entity).ok().map(|object| object.0));
+                let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+                state.pick_selection(target, shift, &active.scene.groups);
             }
             EditorTool::Place => {
                 let candidate = preview.object().cloned().map_err(str::to_owned);
@@ -740,6 +894,7 @@ fn editor_interaction(
                 match result {
                     Ok(id) => {
                         state.selected = Some(id);
+                        state.selected_ids = vec![id];
                         state.last_error = None;
                         preview.confirmed(active.revision);
                         state.tool = state.placement_mode.next_tool();
