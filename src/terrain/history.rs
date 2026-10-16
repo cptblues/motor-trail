@@ -246,6 +246,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn group_membership_and_deletion_are_one_atomic_undo_entry() {
+        use crate::terrain::compositions::ObjectGroup;
+        use crate::terrain::obstacles::ObstacleKind;
+        let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let obj = |id| Obstacle {
+            id, kind: ObstacleKind::Cube, position: [id as f32, 1.0, 0.0],
+            rotation_degrees: [0.0; 3], size: [1.0; 3],
+        };
+        scene.obstacles = vec![obj(1),obj(2),obj(3)];
+        let mut history = EditHistory::default();
+        let group = ObjectGroup { id: 1, name: "Passage".into(), members: vec![1,2,3] };
+        history.push(EditOperation::ObjectsGroups {
+            before: scene.obstacles.clone(), after: scene.obstacles.clone(),
+            groups_before: vec![], groups_after: vec![group.clone()],
+        });
+        assert!(history.redo_len() == 0);
+        scene.groups.push(group.clone());
+        assert_eq!(history.undo_len(), 1);
+        assert!(history.undo(&mut scene));
+        assert!(scene.groups.is_empty());
+        assert!(history.redo(&mut scene));
+        assert_eq!(scene.groups, vec![group.clone()]);
+
+        let before = scene.obstacles.clone();
+        let after = vec![obj(1),obj(2)];
+        let mut smaller = group;
+        smaller.members = vec![1,2];
+        history.push(EditOperation::ObjectsGroups {
+            before, after: after.clone(),
+            groups_before: scene.groups.clone(), groups_after: vec![smaller.clone()],
+        });
+        scene.obstacles = after;
+        scene.groups = vec![smaller];
+        assert!(history.undo(&mut scene));
+        assert_eq!(scene.obstacles.len(), 3);
+        assert_eq!(scene.groups[0].members.len(), 3);
+        assert!(history.redo(&mut scene));
+        assert_eq!(scene.obstacles.len(), 2);
+        assert_eq!(scene.groups[0].members.len(), 2);
+    }
+
+    #[test]
     fn whole_stroke_roundtrip_and_branch_invalidation() {
         let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
         let mut history = EditHistory::default();
