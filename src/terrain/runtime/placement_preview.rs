@@ -23,6 +23,8 @@ struct Candidate {
     revision: u64,
     requested_size: [u32; 3],
     requested_yaw: f32,
+    requested_offset_y: u32,
+    requested_follow_ground: bool,
 }
 
 #[derive(Resource, Default)]
@@ -69,7 +71,15 @@ impl PlacementPreview {
             if ground.is_none() {
                 return Err("Placement hors du terrain".into());
             }
-            object.align_to_ground(&active.scene.terrain)?;
+            if state.placement_follow_ground {
+                object.align_to_ground(&active.scene.terrain)?;
+            } else {
+                // In free mode keep the model upright, permit overlap with
+                // other objects and intentional burial in the heightmap.
+                object.position[1] = point.y + object.size[1] * 0.5;
+            }
+            object.position[1] += state.placement_offset_y;
+            object.validate()?;
             active.scene.validate()?;
             if active.scene.obstacles.len() >= MAX_OBSTACLES {
                 return Err(format!("Limite de {MAX_OBSTACLES} objets atteinte"));
@@ -95,6 +105,8 @@ impl PlacementPreview {
             revision: active.revision,
             requested_size: state.object_size.map(f32::to_bits),
             requested_yaw: yaw,
+            requested_offset_y: state.placement_offset_y.to_bits(),
+            requested_follow_ground: state.placement_follow_ground,
         });
     }
 
@@ -147,6 +159,8 @@ impl PlacementPreview {
                     && candidate.object.kind == state.object_kind
                     && candidate.requested_size == state.object_size.map(f32::to_bits)
                     && candidate.requested_yaw == state.placement_yaw_degrees(state.object_kind)
+                    && candidate.requested_offset_y == state.placement_offset_y.to_bits()
+                    && candidate.requested_follow_ground == state.placement_follow_ground
             });
         if !applicable {
             self.invalidate();
