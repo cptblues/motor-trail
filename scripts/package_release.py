@@ -27,8 +27,19 @@ VEHICLES = (
 )
 TERRAINS = ("Exemple Plat.json", "Exemple Relief.json")
 MODEL = "assets/vehicles/motor_trail_4x4.glb"
+NATURE_IDS = (
+    "tree_oak_round", "tree_oak_wide", "tree_oak_tall", "tree_young",
+    "tree_pine_small", "tree_pine_medium", "tree_pine_tall",
+    "rock_boulder_small", "rock_boulder_medium", "rock_boulder_large",
+    "rock_slab_flat", "rock_cluster", "bush_low", "bush_round", "bush_wild",
+    "grass_short", "grass_tall", "grass_wild", "fern_small", "fern_large",
+    "log_fallen_small", "log_fallen_large", "stump_old",
+)
+NATURE_CATALOG = "assets/3D/catalog.json"
 # Explicit whitelist: adding a new shipped resource requires a deliberate change.
-RESOURCES = {MODEL: MODEL}
+RESOURCES = {MODEL: MODEL, NATURE_CATALOG: NATURE_CATALOG}
+RESOURCES.update({"assets/3D/assets/" + name + ".glb": "assets/3D/assets/" + name + ".glb"
+                  for name in NATURE_IDS})
 RESOURCES.update({"defaults/vehicles/" + name: "configs/vehicles/" + name for name in VEHICLES})
 RESOURCES.update({"defaults/terrains/" + name: "configs/terrains/" + name for name in TERRAINS})
 TAG_PATTERN = re.compile(
@@ -107,6 +118,24 @@ def strict_object(data, name):
     return value
 
 
+def check_nature_catalog(data, name):
+    document = strict_object(data, name)
+    assets = document.get("assets")
+    if not isinstance(assets, list) or len(assets) != len(NATURE_IDS):
+        raise ValueError("nature catalog must contain exactly 23 assets: " + name)
+    seen = set()
+    for asset in assets:
+        if not isinstance(asset, dict):
+            raise ValueError("expected a nature asset object in " + name)
+        asset_id = asset.get("name")
+        if not isinstance(asset_id, str) or asset_id not in NATURE_IDS or asset_id in seen:
+            raise ValueError("unknown or duplicate nature asset ID in " + name)
+        # Exact relative paths also reject traversal, aliases and external resources.
+        if asset.get("file") != "assets/" + asset_id + ".glb":
+            raise ValueError("nature asset file does not match its stable ID in " + name)
+        seen.add(asset_id)
+
+
 def check_binary(data, target):
     if target == "x86_64-pc-windows-msvc":
         if len(data) < 64 or data[:2] != b"MZ":
@@ -150,7 +179,7 @@ def check_glb(data, name):
     if not chunks or chunks[0][0] != 0x4E4F534A:
         raise ValueError("GLB must start with a JSON chunk: " + name)
     if len(chunks) != 2 or chunks[1][0] != 0x004E4942:
-        raise ValueError("vehicle GLB must contain JSON and embedded binary chunks: " + name)
+        raise ValueError("GLB must contain JSON and embedded binary chunks: " + name)
     document = strict_object(chunks[0][1], name)
     asset = document.get("asset")
     meshes = document.get("meshes")
@@ -185,7 +214,9 @@ def read_regular(path, boundary=None):
 
 
 def check_resource(name, data):
-    if name.endswith(".json"):
+    if name == NATURE_CATALOG or name.endswith("/" + NATURE_CATALOG):
+        check_nature_catalog(data, name)
+    elif name.endswith(".json"):
         strict_object(data, name)
     elif name.endswith(".glb"):
         check_glb(data, name)

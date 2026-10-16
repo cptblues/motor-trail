@@ -90,6 +90,16 @@ placement, Echap ne quitte pas le jeu et Q/E ne commandent pas le vehicule.
 Voir [Terrain Workshop](docs/terrain-workshop.md) pour les commandes, l'architecture,
 le format JSON, les limites de reconstruction et les extensions vers les chunks.
 
+### Modeles Nature
+
+Le catalogue Nature de l'onglet Objets propose 23 modeles : arbres, rochers,
+buissons, herbes, fougeres et bois mort. Choisir un modele active son apercu
+avec ses dimensions naturelles ; les commandes de placement restent identiques.
+Les arbres et rochers de la vallee utilisent egalement ces modeles.
+Les troncs, rochers et bois mort ont des collisions ; les petites plantes et
+buissons sont decoratifs, selectionnables mais sans collision physique.
+Voir [les assets Nature](docs/nature-assets.md) pour les identifiants et les limites.
+
 ## Atelier Physique
 
 La fenetre est deplacable et redimensionnable. Les onglets regroupent :

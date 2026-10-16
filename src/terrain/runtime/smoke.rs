@@ -55,13 +55,13 @@ impl Plugin for TerrainSmokePlugin {
     }
 }
 
-fn capture(world: &mut World, output: &std::path::Path, name: &str) {
+pub(super) fn capture(world: &mut World, output: &std::path::Path, name: &str) {
     world
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(output.join(name)));
 }
 
-fn mouse_at(world: &mut World, point: Vec3, pressed: bool) -> Result<(), String> {
+pub(super) fn mouse_at(world: &mut World, point: Vec3, pressed: bool) -> Result<(), String> {
     let position = {
         let mut cameras =
             world.query_filtered::<(&Camera, &GlobalTransform), With<crate::ChaseCamera>>();
@@ -105,7 +105,7 @@ fn mouse_at(world: &mut World, point: Vec3, pressed: bool) -> Result<(), String>
     Ok(())
 }
 
-fn left_button(world: &mut World, pressed: bool) -> Result<(), String> {
+pub(super) fn left_button(world: &mut World, pressed: bool) -> Result<(), String> {
     let window = world
         .query_filtered::<Entity, With<PrimaryWindow>>()
         .single(world)
@@ -122,7 +122,7 @@ fn left_button(world: &mut World, pressed: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn key_input(world: &mut World, key_code: KeyCode, pressed: bool) -> Result<(), String> {
+pub(super) fn key_input(world: &mut World, key_code: KeyCode, pressed: bool) -> Result<(), String> {
     let window = world
         .query_filtered::<Entity, With<PrimaryWindow>>()
         .single(world)

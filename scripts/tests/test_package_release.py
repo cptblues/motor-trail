@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import stat
 import struct
@@ -26,9 +27,20 @@ TARGETS = {
 VEHICLES = ["Baseline.json", "Confort.json", "Dynamique.json",
             "Franchissement.json", "Origine.json", "motor_trail_4x4.mounts.json"]
 TERRAINS = ["Exemple Plat.json", "Exemple Relief.json"]
+NATURE_IDS = (
+    "tree_oak_round", "tree_oak_wide", "tree_oak_tall", "tree_young",
+    "tree_pine_small", "tree_pine_medium", "tree_pine_tall",
+    "rock_boulder_small", "rock_boulder_medium", "rock_boulder_large",
+    "rock_slab_flat", "rock_cluster", "bush_low", "bush_round", "bush_wild",
+    "grass_short", "grass_tall", "grass_wild", "fern_small", "fern_large",
+    "log_fallen_small", "log_fallen_large", "stump_old",
+)
+NATURE_CATALOG = "assets/3D/catalog.json"
+NATURE_MODELS = ["assets/3D/assets/" + name + ".glb" for name in NATURE_IDS]
+NATURE_SOURCES = NATURE_MODELS + [NATURE_CATALOG]
 SOURCES = ["assets/vehicles/motor_trail_4x4.glb"] + [
     "configs/vehicles/" + name for name in VEHICLES
-] + ["configs/terrains/" + name for name in TERRAINS]
+] + ["configs/terrains/" + name for name in TERRAINS] + NATURE_SOURCES
 
 
 def fixture_binary(target):
@@ -103,7 +115,12 @@ class PackagingTests(unittest.TestCase):
                         self.assertIn(prefix + "/defaults/vehicles/" + name, names)
                     for name in TERRAINS:
                         self.assertIn(prefix + "/defaults/terrains/" + name, names)
+                    expected = {prefix + "/" + name.replace("configs/", "defaults/", 1)
+                                for name in SOURCES}
+                    expected.update((prefix + "/README.txt", prefix + "/version.json"))
                     if "apple" in target:
+                        expected.update(("Motor-Trail.app/Contents/MacOS/motor-trail",
+                                         "Motor-Trail.app/Contents/Info.plist"))
                         info = plistlib.loads(archive.read("Motor-Trail.app/Contents/Info.plist"))
                         self.assertEqual(info["CFBundleIdentifier"], "com.motortrail.game")
                         self.assertEqual(info["CFBundleDisplayName"], "Motor-Trail")
@@ -113,16 +130,45 @@ class PackagingTests(unittest.TestCase):
                         self.assertNotIn("CFBundleIconFile", info)
                         mode = archive.getinfo("Motor-Trail.app/Contents/MacOS/motor-trail").external_attr >> 16
                         self.assertEqual(stat.S_IMODE(mode), 0o755)
+                    else:
+                        expected.add("Motor-Trail/motor-trail.exe")
+                    self.assertEqual(names, expected)
+
+    def test_all_nature_models_and_catalog_are_shipped(self):
+        self.assertEqual(len(NATURE_IDS), 23)
+        for target in TARGETS:
+            with self.subTest(target=target):
+                with zipfile.ZipFile(self.build(target)) as archive:
+                    prefix = ("Motor-Trail" if "windows" in target
+                              else "Motor-Trail.app/Contents/Resources")
+                    expected = {prefix + "/" + name for name in NATURE_SOURCES}
+                    shipped = {name for name in archive.namelist()
+                               if name.startswith(prefix + "/assets/3D/")}
+                    self.assertEqual(shipped, expected)
+                    for name in NATURE_SOURCES:
+                        self.assertEqual(archive.read(prefix + "/" + name),
+                                         (self.repo / name).read_bytes())
+                    catalog = json.loads(archive.read(prefix + "/" + NATURE_CATALOG))
+                    self.assertEqual({entry["name"]: entry["file"] for entry in catalog["assets"]},
+                                     {name: "assets/" + name + ".glb" for name in NATURE_IDS})
 
     def test_only_whitelisted_resources_are_shipped(self):
         for name in ["configs/vehicles/.last-profile.json", "configs/vehicles/Custom.json",
                      "configs/vehicles/Baseline.json.tmp", "configs/terrains/Custom.json",
-                     "assets/vehicles/generate_motor_trail_4x4.py", "assets/secret.json"]:
+                     "assets/vehicles/generate_motor_trail_4x4.py", "assets/secret.json",
+                     "assets/3D/generate_assets.py", "assets/3D/preview.png",
+                     "assets/3D/README.md", "assets/3D/STYLE_GUIDE.md",
+                     "assets/3D/MASTER_PROMPT.txt", "assets/3D/images/custom.png",
+                     "assets/3D/prompts/custom.txt", "assets/3D/assets/custom.glb",
+                     "assets/3D/assets/tree_oak_round.glb.tmp", "assets/3D/custom.json"]:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("unshipped", encoding="utf-8")
         with zipfile.ZipFile(self.build()) as archive:
             self.assertEqual(len(archive.namelist()), len(SOURCES) + 3)
+            self.assertEqual({name for name in archive.namelist()
+                              if name.startswith("Motor-Trail/assets/3D/")},
+                             {"Motor-Trail/" + name for name in NATURE_SOURCES})
             self.assertFalse(any("Custom" in name or ".py" in name or ".last-profile" in name
                                  or ".tmp" in name for name in archive.namelist()))
 
@@ -143,6 +189,127 @@ class PackagingTests(unittest.TestCase):
         (self.repo / SOURCES[0]).write_bytes(b"glTF" + b"\0" * 20)
         with self.assertRaises(ValueError):
             self.build()
+
+    def test_build_rejects_each_missing_nature_resource(self):
+        for name in NATURE_SOURCES:
+            with self.subTest(name=name):
+                source = self.repo / name
+                original = source.read_bytes()
+                source.unlink()
+                try:
+                    with self.assertRaisesRegex(ValueError, re.escape(Path(name).name)):
+                        self.build()
+                    self.assertFalse((self.out / TARGETS["x86_64-pc-windows-msvc"]).exists())
+                finally:
+                    source.write_bytes(original)
+
+    def test_build_rejects_each_corrupt_nature_glb(self):
+        for name in NATURE_MODELS:
+            with self.subTest(name=name):
+                source = self.repo / name
+                original = source.read_bytes()
+                source.write_bytes(b"glTF" + b"\0" * 20)
+                try:
+                    with self.assertRaisesRegex(ValueError, re.escape(Path(name).name)):
+                        self.build()
+                    self.assertFalse((self.out / TARGETS["x86_64-pc-windows-msvc"]).exists())
+                finally:
+                    source.write_bytes(original)
+
+    def test_validator_rejects_each_missing_nature_resource(self):
+        for name in NATURE_SOURCES:
+            with self.subTest(name=name):
+                archive = self.build()
+                self.rewrite(archive, omit=["Motor-Trail/" + name])
+                with self.assertRaisesRegex(ValueError, re.escape(name)):
+                    self.validate(archive)
+
+    def test_validator_rejects_each_corrupt_nature_glb(self):
+        archive = self.build()
+        for name in NATURE_MODELS:
+            with self.subTest(name=name):
+                # Keep a valid GLB header but break the embedded chunk framing.
+                original = (self.repo / name).read_bytes()
+                data = bytearray(original)
+                struct.pack_into("<I", data, 12, len(data) * 2)
+                self.rewrite(archive, {"Motor-Trail/" + name: bytes(data)})
+                try:
+                    with self.assertRaisesRegex(ValueError, re.escape(name)):
+                        self.validate(archive)
+                finally:
+                    self.rewrite(archive, {"Motor-Trail/" + name: original})
+
+    def assert_catalog_rejected(self, data):
+        archive = self.build()
+        original_archive = archive.read_bytes()
+        source = self.repo / NATURE_CATALOG
+        original = source.read_bytes()
+        source.write_bytes(data)
+        try:
+            with self.subTest(operation="build"):
+                with self.assertRaisesRegex(ValueError, "catalog.json"):
+                    self.build()
+                self.assertEqual(archive.read_bytes(), original_archive)
+        finally:
+            source.write_bytes(original)
+        self.rewrite(archive, {"Motor-Trail/" + NATURE_CATALOG: data})
+        with self.subTest(operation="validate"):
+            with self.assertRaisesRegex(ValueError, "catalog.json"):
+                self.validate(archive)
+
+    def test_catalog_rejects_corrupt_json_at_build_and_validation(self):
+        for bad in (b"{", b"[]", b"null", b"{}", b"\xff",
+                    b'{"assets": [], "value": NaN}',
+                    b'{"assets": [], "assets": []}',
+                    b'{"assets": [{"name": "tree_young", "name": "tree_young"}]}'):
+            with self.subTest(bad=bad):
+                self.assert_catalog_rejected(bad)
+
+    def test_catalog_rejects_wrong_asset_set_at_build_and_validation(self):
+        original = (self.repo / NATURE_CATALOG).read_bytes()
+        invalid_assets = [None, {}, [], [None] * 23, [{}] * 23]
+        assets = json.loads(original)["assets"]
+        invalid_assets.extend((assets[:-1], assets + [assets[0]], assets[:-1] + [assets[0]]))
+        for index, entries in enumerate(invalid_assets):
+            with self.subTest(case=index):
+                catalog = json.loads(original)
+                catalog["assets"] = entries
+                self.assert_catalog_rejected(json.dumps(catalog).encode())
+        catalog = json.loads(original)
+        del catalog["assets"]
+        self.assert_catalog_rejected(json.dumps(catalog).encode())
+
+    def test_catalog_rejects_unknown_ids_and_mismatching_paths(self):
+        original = (self.repo / NATURE_CATALOG).read_bytes()
+        changes = [("name", value) for value in
+                   (None, 23, [], {}, "unknown_tree", "TREE_OAK_ROUND", "../tree_oak_round")]
+        changes += [("file", value) for value in
+                    (None, 23, [], {}, "assets/tree_oak_wide.glb", "assets/custom.glb",
+                     "assets/tree_oak_round.GLB", "assets/../tree_oak_round.glb",
+                     "../assets/tree_oak_round.glb", "/assets/tree_oak_round.glb",
+                     "C:/assets/tree_oak_round.glb", "assets\\tree_oak_round.glb",
+                     "assets//tree_oak_round.glb", "assets/./tree_oak_round.glb",
+                     "https://example.com/tree_oak_round.glb", "assets/%2e%2e/tree_oak_round.glb",
+                     "assets/tree_oak_round.glb\x00", "assets/tree_oak_round.glb\n")]
+        for key, value in changes:
+            with self.subTest(key=key, value=value):
+                catalog = json.loads(original)
+                if value is None:
+                    del catalog["assets"][0][key]
+                else:
+                    catalog["assets"][0][key] = value
+                self.assert_catalog_rejected(json.dumps(catalog).encode())
+        catalog = json.loads(original)
+        catalog["assets"][0]["name"] = "custom"
+        catalog["assets"][0]["file"] = "assets/custom.glb"
+        self.assert_catalog_rejected(json.dumps(catalog).encode())
+
+    def test_catalog_accepts_reordered_entries(self):
+        source = self.repo / NATURE_CATALOG
+        catalog = json.loads(source.read_bytes())
+        catalog["assets"].reverse()
+        source.write_text(json.dumps(catalog), encoding="utf-8")
+        self.validate(self.build())
 
     def test_build_rejects_source_symlinks(self):
         link = self.repo / SOURCES[1]
