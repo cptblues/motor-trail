@@ -491,33 +491,48 @@ fn show_workshop(
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("▲  MOTOR TRAIL")
-                            .size(18.0).strong().color(active));
+                        ui.label(egui::RichText::new("MOTOR TRAIL")
+                            .size(if wide { 18.0 } else { 14.0 }).strong().color(active));
                         ui.separator();
                         if wide {
-                            ui.label(egui::RichText::new("● MODE CRÉATION")
-                                .small().strong().color(active));
-                        }
-                        for (tab, label) in [
-                            (WorkshopTab::Generation, "Terrain"),
-                            (WorkshopTab::Sculpture, "Sculpter"),
-                            (WorkshopTab::Objects, "Objets"),
-                            (WorkshopTab::Scenes, "Scènes"),
-                        ] {
-                            if ui.selectable_label(draft.tab == tab, label).clicked() {
-                                draft.tab = tab;
-                                if tab == WorkshopTab::Objects {
-                                    controls.tool = EditorTool::Select;
-                                } else if tab == WorkshopTab::Sculpture {
-                                    controls.tool = EditorTool::Sculpt;
+                            ui.label(egui::RichText::new("● CRÉATION")
+                                .strong().color(active));
+                            for (tab, glyph, label) in [
+                                (WorkshopTab::Generation, BuilderGlyph::Terrain, "Terrain"),
+                                (WorkshopTab::Sculpture, BuilderGlyph::Sculpt, "Sculpter"),
+                                (WorkshopTab::Objects, BuilderGlyph::Objects, "Objets"),
+                                (WorkshopTab::Scenes, BuilderGlyph::Scenes, "Scènes"),
+                            ] {
+                                if builder_icon_button(ui, glyph, label,
+                                    draft.tab == tab, 94.0).clicked() {
+                                    draft.tab = tab;
+                                    if tab == WorkshopTab::Objects {
+                                        controls.tool = EditorTool::Select;
+                                    } else if tab == WorkshopTab::Sculpture {
+                                        controls.tool = EditorTool::Sculpt;
+                                    }
                                 }
                             }
+                        } else {
+                            ui.label(egui::RichText::new("● CRÉER").color(active));
                         }
-                        ui.separator();
-                        if wide { ui.label(view.scene_name); }
-                        let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
-                        if ui.add(egui::Button::new("◈ Sauvegarder")
-                            .fill(egui::Color32::from_rgb(35, 92, 71))).clicked() {
+                        if wide {
+                            ui.separator();
+                            let undo_button = history_icon_button(ui, view.undo > 0, false);
+                            if undo_button.clicked() { enqueue(&mut action, WorkshopAction::Undo); }
+                            let redo_button = history_icon_button(ui, view.redo > 0, true);
+                            if redo_button.clicked() { enqueue(&mut action, WorkshopAction::Redo); }
+                        }
+                        if builder_icon_button(ui, BuilderGlyph::Play,
+                            if wide { "TESTER" } else { "Test" },
+                            false, if wide { 106.0 } else { 65.0 },
+                        ).clicked() {
+                            enqueue(&mut action, WorkshopAction::SetMode(WorkshopMode::Drive));
+                        }
+                        if builder_icon_button(ui, BuilderGlyph::Save,
+                            if wide { "Sauvegarder" } else { "Sauver" },
+                            false, if wide { 130.0 } else { 79.0 },
+                        ).clicked() {
                             if view.file.is_some() {
                                 enqueue(&mut action, WorkshopAction::Save);
                             } else if files.iter().any(|name|
@@ -644,9 +659,9 @@ fn show_workshop(
             }).response.rect);
         bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_asset_shelf")
             .resizable(true)
-            .default_size(226.0)
+            .default_size(254.0)
             .min_size(builder_shelf_min_height(screen.height()))
-            .max_size((screen.height() * 0.42).max(210.0))
+            .max_size((screen.height() * 0.48).max(250.0))
             .show(&mut root, |ui| {
                 ui.visuals_mut().panel_fill = background;
                 egui::Frame::new().fill(background)
@@ -690,9 +705,23 @@ fn show_workshop(
                 egui::Frame::new().fill(background)
                     .inner_margin(egui::Margin::same(8))
                     .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.strong("Atelier");
-                            if ui.button("Masquer [T]").clicked() { open = false; }
+                        ui.horizontal_wrapped(|ui| {
+                            for (tab, label) in [
+                                (WorkshopTab::Generation, "Terrain"),
+                                (WorkshopTab::Sculpture, "Sculpter"),
+                                (WorkshopTab::Objects, "Objets"),
+                                (WorkshopTab::Scenes, "Scènes"),
+                            ] {
+                                if ui.selectable_label(draft.tab == tab, label).clicked() {
+                                    draft.tab = tab;
+                                    if tab == WorkshopTab::Objects {
+                                        controls.tool = EditorTool::Select;
+                                    } else if tab == WorkshopTab::Sculpture {
+                                        controls.tool = EditorTool::Sculpt;
+                                    }
+                                }
+                            }
+                            if ui.small_button("Masquer [T]").clicked() { open = false; }
                         });
                         egui::ScrollArea::vertical()
                             .id_salt(("builder_compact", draft.tab as u8))
@@ -832,7 +861,9 @@ fn builder_icon_button(
 /// The complete shelf contains a placement row, search/categories and a
 /// 121-point thumbnail strip. Never offer a resize height that clips the row.
 fn builder_shelf_min_height(viewport_height: f32) -> f32 {
-    (viewport_height * 0.34).min(203.0).max(172.0)
+    // Placement actions + search/categories + 121px thumbnails + panel
+    // padding; never permit the user to shrink beneath this usable height.
+    (viewport_height * 0.32).clamp(225.0, 250.0)
 }
 
 fn toolbar(
