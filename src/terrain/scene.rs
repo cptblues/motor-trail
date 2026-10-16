@@ -436,6 +436,38 @@ mod tests {
     }
 
     #[test]
+    fn original_v1_files_without_groups_still_roundtrip_identically() {
+        let scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let serialized = serde_json::to_value(&scene).unwrap();
+        assert!(serialized.get("groups").is_none(), "empty optional metadata must be omitted");
+        let legacy: TerrainScene = serde_json::from_value(serialized).unwrap();
+        assert!(legacy.groups.is_empty());
+        assert_eq!(legacy, scene);
+    }
+
+    #[test]
+    fn v1_group_membership_roundtrips_and_rejects_corrupt_references() {
+        use crate::terrain::compositions::ObjectGroup;
+        let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        for id in [10, 20, 30] {
+            scene.obstacles.push(Obstacle {
+                id, kind: ObstacleKind::Cube, position: [id as f32 / 10.0, 1.0, 0.0],
+                rotation_degrees: [0.0; 3], size: [2.0; 3],
+            });
+        }
+        scene.groups.push(ObjectGroup {
+            id: 1, name: "Petit pont".into(), members: vec![10,20],
+        });
+        scene.validate().unwrap();
+        let data = serde_json::to_vec(&scene).unwrap();
+        let restored: TerrainScene = serde_json::from_slice(&data).unwrap();
+        assert_eq!(restored, scene);
+        let mut invalid = restored;
+        invalid.groups[0].members.push(99);
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
     fn document_rejects_bad_versions_duplicate_ids_spawn_and_unknown_fields() {
         let mut scene = TerrainScene::reference(ReferenceScene::Rocks).unwrap();
         scene.obstacles.push(scene.obstacles[0].clone());
