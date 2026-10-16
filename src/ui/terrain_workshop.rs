@@ -15,9 +15,17 @@ use crate::terrain::scene::{ReferenceScene, VehicleSpawn};
 /// The parent installs egui, initializes terrain resources and owns input capture.
 pub struct TerrainWorkshopPlugin;
 
+/// Last known screen area occupied by the editor; the input capture runs
+/// before egui has laid out this frame, so it reuses these previous bounds.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct WorkshopDockBounds {
+    pub rect: Option<egui::Rect>,
+}
+
 impl Plugin for TerrainWorkshopPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(EguiPrimaryContextPass, terrain_workshop_ui);
+        app.init_resource::<WorkshopDockBounds>()
+            .add_systems(EguiPrimaryContextPass, terrain_workshop_ui);
     }
 }
 
@@ -359,9 +367,11 @@ fn terrain_workshop_ui(
     mut state: ResMut<TerrainWorkshopState>,
     active: Res<ActiveTerrain>,
     manipulation: Res<crate::terrain::runtime::GizmoGesture>,
+    mut dock: ResMut<WorkshopDockBounds>,
     mut local: Local<WorkshopUi>,
 ) -> Result {
     if !state.open {
+        dock.rect = None;
         return Ok(());
     }
     let terrain = &active.scene.terrain;
@@ -389,7 +399,10 @@ fn terrain_workshop_ui(
         ground_height: &ground_height,
         preview_object: manipulation.candidate.as_ref(),
     };
-    show_workshop(contexts.ctx_mut()?, &mut state, &view, &mut local);
+    dock.rect = show_workshop(contexts.ctx_mut()?, &mut state, &view, &mut local);
+    if !state.open {
+        dock.rect = None;
+    }
     Ok(())
 }
 
