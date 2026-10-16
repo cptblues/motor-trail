@@ -442,12 +442,12 @@ la protection existante contre l'ecrasement d'un fichier homonyme.
 
 Dans l'onglet Objets, les gizmos, l'etat de la selection et les actions
 Dupliquer/Supprimer sont maintenant accessibles sans faire defiler tout le
-catalogue. Les listes de scenes, les vignettes d'assets et les compositions
+catalogue. La liste des objets poses, les vignettes d'assets et les compositions
 sont organisees en sections repliables. Les parametres techniques de
 placement (offset, dimensions precises), les reglages de grille et l'angle
 de magnetisme se trouvent sous **Options avancees**. Les valeurs de
-position/rotation/dimensions exactes et la forme du pinceau sont egalement
-repliees par defaut.
+position/rotation/dimensions exactes, la forme du pinceau et le point de
+depart du vehicule sont egalement replies par defaut.
 
 La logique de sauvegarde JSON, la physique, les GLB et les regroupements
 de la PR 3 restent inchanges. Cette PR traite en priorite les retours
