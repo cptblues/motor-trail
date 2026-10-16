@@ -5,6 +5,7 @@ use bevy::prelude::*;
 use bevy::window::Window;
 
 use crate::terrain::obstacles::{Obstacle, ObstacleKind};
+use crate::terrain::compositions::{center, transform_members};
 use super::{ActiveTerrain, EditorTool, ObstacleEntity, TerrainSync, TerrainWorkshopState, WorkshopMode, commit_objects};
 use crate::ui::UiInputCapture;
 
@@ -45,11 +46,15 @@ pub(super) struct Drag {
     length: f32,
     scalar: f32,
     direction: Vec3,
+    /// Empty for legacy single-object drags.
+    members: Vec<Obstacle>,
 }
 #[derive(Resource, Default)]
 pub(crate) struct GizmoGesture {
     pub(super) drag: Option<Drag>,
     pub(crate) candidate: Option<Obstacle>,
+    pub(crate) candidates: Vec<Obstacle>,
+    pub(crate) handle: Option<Obstacle>,
     pub(crate) block_orbit: bool,
 }
 
@@ -219,13 +224,20 @@ pub(super) fn interact(
     gesture.block_orbit = false;
     let selected = state.selected.and_then(|id|
         active.scene.obstacles.iter().find(|o| o.id == id));
+    let selection = state.selection();
+    let members: Vec<_> = active.scene.obstacles.iter()
+        .filter(|o| selection.contains(&o.id)).cloned().collect();
     let allowed = state.open && state.mode == WorkshopMode::Edit
         && state.tool == EditorTool::Select && focused && !sync.full_reload;
     if gesture.drag.is_some() {
         let cancelled = !allowed || capture.keyboard
             || keys.just_pressed(KeyCode::Escape)
             || mouse.just_pressed(MouseButton::Right)
-            || selected.is_none_or(|o| gesture.drag.as_ref().is_some_and(|g| o != &g.start));
+            || selected.is_none()
+            || gesture.drag.as_ref().is_some_and(|g| {
+                if g.members.is_empty() { selected != Some(&g.start) }
+                else { g.members != members }
+            });
         if cancelled {
             // Cancellation by right-click must not orbit the camera on the same
             // frame as the cancelled manipulation.
@@ -233,22 +245,38 @@ pub(super) fn interact(
             keys.clear_just_pressed(KeyCode::Escape);
             gesture.drag = None;
             gesture.candidate = None;
+            gesture.candidates.clear();
+            gesture.handle = None;
             return true;
         }
         if !mouse.pressed(MouseButton::Left) {
-            if let (Some(candidate), Some(drag)) = (gesture.candidate.take(), gesture.drag.take()) {
-                if candidate != drag.start {
-                    let mut objects = active.scene.obstacles.clone();
-                    if let Some(target) = objects.iter_mut().find(|o| o.id == drag.start.id) {
-                        *target = candidate;
-                        if let Err(error) = commit_objects(objects, active, sync) {
-                            state.last_error = Some(error);
-                        } else {
-                            state.last_error = None;
+            if let Some(drag) = gesture.drag.take() {
+                let updates = if drag.members.is_empty() {
+                    gesture.candidate.take().into_iter().collect::<Vec<_>>()
+                } else {
+                    std::mem::take(&mut gesture.candidates)
+                };
+                let mut objects = active.scene.obstacles.clone();
+                let mut changed = false;
+                for candidate in updates {
+                    if let Some(target) = objects.iter_mut().find(|o| o.id == candidate.id) {
+                        if *target != candidate {
+                            *target = candidate;
+                            changed = true;
                         }
                     }
                 }
+                if changed {
+                    if let Err(error) = commit_objects(objects, active, sync) {
+                        state.last_error = Some(error);
+                    } else {
+                        state.last_error = None;
+                    }
+                }
             }
+            gesture.candidate = None;
+            gesture.candidates.clear();
+            gesture.handle = None;
             return true;
         }
         if let Some(ray) = ray {
@@ -257,13 +285,30 @@ pub(super) fn interact(
             if let Some(drag) = &gesture.drag {
                 if let Some(candidate) =
                     update_candidate(drag, ray, state, &active.scene.obstacles, fine, alt) {
-                    gesture.candidate = Some(candidate);
+                    if drag.members.is_empty() {
+                        gesture.candidate = Some(candidate);
+                    } else {
+                        let pivot_before = Vec3::from_array(drag.start.position);
+                        let pivot_after = Vec3::from_array(candidate.position);
+                        let delta_rot = candidate.transform().rotation
+                            * drag.start.transform().rotation.inverse();
+                        let scale = Vec3::from_array(candidate.size)
+                            / Vec3::from_array(drag.start.size);
+                        if let Ok(updated) = transform_members(
+                            &drag.members, pivot_before, pivot_after, delta_rot, scale,
+                        ) {
+                            gesture.handle = Some(candidate);
+                            gesture.candidates = updated;
+                        }
+                    }
                 }
             }
         }
         return true;
     }
     gesture.candidate = None;
+    gesture.candidates.clear();
+    gesture.handle = None;
     if !allowed || capture.pointer || capture.keyboard || selected.is_none() {
         return false;
     }
@@ -272,13 +317,28 @@ pub(super) fn interact(
     if keys.just_pressed(KeyCode::KeyS) { state.gizmo_mode = GizmoMode::Scale; }
     if !mouse.just_pressed(MouseButton::Left) { return false; }
     let (Some(ray), Some(selected)) = (ray, selected) else { return false; };
-    let pivot = Vec3::from_array(selected.position);
+    let group = members.len() > 1;
+    let mut start = selected.clone();
+    if group {
+        // A virtual handle is centered on the group. All real objects retain
+        // independent geometry and stable IDs.
+        start.position = center(&members).to_array();
+        start.rotation_degrees = [0.0; 3];
+        start.size = [2.0; 3];
+    }
+    let pivot = Vec3::from_array(start.position);
     let length = axis_length(pivot, camera_eye);
     if let Some((axis, scalar, direction)) = pick(ray, pivot, length, state.gizmo_mode) {
         gesture.drag = Some(Drag {
-            start: selected.clone(), axis, mode: state.gizmo_mode, length, scalar, direction,
+            start: start.clone(), axis, mode: state.gizmo_mode, length, scalar, direction,
+            members: if group { members.clone() } else { Vec::new() },
         });
-        gesture.candidate = Some(selected.clone());
+        if group {
+            gesture.candidates = members;
+            gesture.handle = Some(start);
+        } else {
+            gesture.candidate = Some(start);
+        }
         return true;
     }
     false
@@ -292,10 +352,19 @@ pub(super) fn draw(
     eye: Vec3,
 ) {
     if state.mode != WorkshopMode::Edit || state.tool != EditorTool::Select || !state.open { return; }
-    let Some(object) = gesture.candidate.as_ref().or_else(|| {
-        state.selected.and_then(|id| active.scene.obstacles.iter().find(|o| o.id == id))
-    }) else { return; };
-    let pivot = Vec3::from_array(object.position);
+    let selection = state.selection();
+    let members: Vec<_> = active.scene.obstacles.iter()
+        .filter(|o| selection.contains(&o.id)).cloned().collect();
+    if members.is_empty() { return; }
+    let pivot = if let Some(handle) = &gesture.handle {
+        Vec3::from_array(handle.position)
+    } else if members.len() > 1 {
+        center(&members)
+    } else if let Some(candidate) = &gesture.candidate {
+        Vec3::from_array(candidate.position)
+    } else {
+        Vec3::from_array(members[0].position)
+    };
     let length = axis_length(pivot, eye);
     for axis in Axis::ALL {
         let direction = axis.vector();
@@ -319,11 +388,10 @@ pub(super) fn draw(
     }
 }
 
-/// An independent, collider-free visual overlay. The physics object's material
-/// and transform never move during a drag; render geometry is cached for
-/// repeated transforms and replaced only when dimensions change.
-#[derive(Resource, Default)]
-pub(super) struct ManipulationPreview {
+/// Collider-free overlays: each selected original is hidden while its
+/// independent preview is moved. Rapier never sees transient transforms.
+#[derive(Default)]
+struct PreviewPart {
     entity: Option<Entity>,
     hidden: Option<Entity>,
     mesh: Option<Handle<Mesh>>,
@@ -331,27 +399,42 @@ pub(super) struct ManipulationPreview {
     geometry: Option<(ObstacleKind, [u32; 3])>,
 }
 
+#[derive(Resource, Default)]
+pub(super) struct ManipulationPreview {
+    parts: Vec<PreviewPart>,
+}
+
 impl ManipulationPreview {
-    fn cleanup(&mut self, world: &mut World) {
-        if let Some(entity) = self.hidden.take() {
-            if let Some(mut entity) = world.get_entity_mut(entity).ok() {
+    fn clear_part(part: &mut PreviewPart, world: &mut World) {
+        if let Some(source) = part.hidden.take() {
+            if let Ok(mut entity) = world.get_entity_mut(source) {
                 entity.insert(Visibility::Inherited);
             }
         }
-        if let Some(entity) = self.entity.take() {
-            let _ = world.despawn(entity);
+        if let Some(entity) = part.entity.take() { let _ = world.despawn(entity); }
+        if let Some(mesh) = part.mesh.take() {
+            world.resource_mut::<Assets<Mesh>>().remove(mesh.id());
         }
-        if let Some(mesh) = self.mesh.take() { world.resource_mut::<Assets<Mesh>>().remove(mesh.id()); }
-        if let Some(mat) = self.material.take() {
+        if let Some(mat) = part.material.take() {
             world.resource_mut::<Assets<StandardMaterial>>().remove(mat.id());
         }
-        self.geometry = None;
+        part.geometry = None;
+    }
+
+    fn cleanup(&mut self, world: &mut World) {
+        for part in &mut self.parts { Self::clear_part(part, world); }
+        self.parts.clear();
     }
 
     fn render(&mut self, world: &mut World) {
-        let candidate = world.resource::<GizmoGesture>().candidate.clone();
+        let gesture = world.resource::<GizmoGesture>();
+        let candidates = if !gesture.candidates.is_empty() {
+            gesture.candidates.clone()
+        } else {
+            gesture.candidate.iter().cloned().collect()
+        };
         let editing = world.resource::<TerrainWorkshopState>().mode == WorkshopMode::Edit;
-        let valid = candidate.as_ref().is_some_and(|o| {
+        let valid = !candidates.is_empty() && candidates.iter().all(|o| {
             world.resource::<ActiveTerrain>().scene.obstacles.iter().any(|other|
                 other.id == o.id && other.kind == o.kind)
         });
@@ -359,48 +442,62 @@ impl ManipulationPreview {
             self.cleanup(world);
             return;
         }
-        let candidate = candidate.unwrap();
-        let source = world.iter_entities().find(|e|
-            e.get::<ObstacleEntity>().is_some_and(|id| id.0 == candidate.id)
-        ).map(|e| e.id());
-        if self.hidden != source {
-            if let Some(old) = self.hidden.take() {
-                if let Ok(mut entity) = world.get_entity_mut(old) {
-                    entity.insert(Visibility::Inherited);
+        while self.parts.len() > candidates.len() {
+            if let Some(mut part) = self.parts.pop() {
+                Self::clear_part(&mut part, world);
+            }
+        }
+        while self.parts.len() < candidates.len() {
+            self.parts.push(PreviewPart::default());
+        }
+        for (index, candidate) in candidates.iter().enumerate() {
+            let part = &mut self.parts[index];
+            let source = world.iter_entities().find(|e|
+                e.get::<ObstacleEntity>().is_some_and(|id| id.0 == candidate.id)
+            ).map(|e| e.id());
+            if part.hidden != source {
+                if let Some(old) = part.hidden.take() {
+                    if let Ok(mut entity) = world.get_entity_mut(old) {
+                        entity.insert(Visibility::Inherited);
+                    }
+                }
+                if let Some(source) = source {
+                    world.entity_mut(source).insert(Visibility::Hidden);
+                    part.hidden = Some(source);
                 }
             }
-            if let Some(source) = source {
-                world.entity_mut(source).insert(Visibility::Hidden);
-                self.hidden = Some(source);
+            let geometry = (candidate.kind, candidate.size.map(f32::to_bits));
+            if part.geometry != Some(geometry) {
+                let Ok(mesh) = candidate.build_mesh() else {
+                    self.cleanup(world);
+                    return;
+                };
+                let mut meshes = world.resource_mut::<Assets<Mesh>>();
+                if let Some(handle) = &part.mesh { meshes.insert(handle.id(), mesh); }
+                else { part.mesh = Some(meshes.add(mesh)); }
+                part.geometry = Some(geometry);
             }
-        }
-        let geometry = (candidate.kind, candidate.size.map(f32::to_bits));
-        if self.geometry != Some(geometry) {
-            let Ok(mesh) = candidate.build_mesh() else {
-                self.cleanup(world);
-                return;
-            };
-            let mut meshes = world.resource_mut::<Assets<Mesh>>();
-            if let Some(handle) = &self.mesh { meshes.insert(handle.id(), mesh); }
-            else { self.mesh = Some(meshes.add(mesh)); }
-            self.geometry = Some(geometry);
-        }
-        if self.material.is_none() {
-            self.material = Some(world.resource_mut::<Assets<StandardMaterial>>().add(
-                StandardMaterial { base_color: Color::WHITE,
-                    perceptual_roughness: 0.9, ..default() }
-            ));
-        }
-        if let Some(entity) = self.entity {
-            world.entity_mut(entity).insert(candidate.transform());
-        } else {
-            self.entity = Some(world.spawn((
-                Name::new("Manipulation preview"),
-                Mesh3d(self.mesh.as_ref().unwrap().clone()),
-                MeshMaterial3d(self.material.as_ref().unwrap().clone()),
-                candidate.transform(),
-                NotShadowCaster,
-            )).id());
+            if part.material.is_none() {
+                part.material = Some(world.resource_mut::<Assets<StandardMaterial>>().add(
+                    StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 0.9,
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    },
+                ));
+            }
+            if let Some(entity) = part.entity {
+                world.entity_mut(entity).insert(candidate.transform());
+            } else {
+                part.entity = Some(world.spawn((
+                    Name::new(if index == 0 { "Manipulation preview" } else { "Manipulation preview child" }),
+                    Mesh3d(part.mesh.as_ref().unwrap().clone()),
+                    MeshMaterial3d(part.material.as_ref().unwrap().clone()),
+                    candidate.transform(), NotShadowCaster,
+                )).id());
+            }
         }
     }
 }
@@ -460,6 +557,7 @@ mod tests {
             length: 3.0,
             scalar: 0.5,
             direction: Vec3::ZERO,
+            members: Vec::new(),
         };
         let moved = update_candidate(
             &drag, pick_ray(2.0, 0.0), &state, &[], false, false,
@@ -507,6 +605,7 @@ mod tests {
             length: 3.0,
             scalar: 0.0,
             direction: Vec3::ZERO,
+            members: Vec::new(),
         };
         let ray = Ray3d::new(Vec3::new(8.0, 0.4, 0.0), Dir3::NEG_X);
         let buried = update_candidate(&drag, ray, &state, &[], false, false).unwrap();
@@ -525,6 +624,7 @@ mod tests {
             length: 3.0,
             scalar: 0.0,
             direction: Vec3::X,
+            members: Vec::new(),
         };
         let turned = update_candidate(
             &drag, pick_ray(0.0, 1.0), &state, &[], false, false,
@@ -556,7 +656,7 @@ mod tests {
         let mut gesture = GizmoGesture::default();
         let setup = || Drag {
             start: original.clone(), axis: Axis::X, mode: GizmoMode::Move,
-            length: 3.0, scalar: 0.5, direction: Vec3::ZERO,
+            length: 3.0, scalar: 0.5, direction: Vec3::ZERO, members: Vec::new(),
         };
         mouse.press(MouseButton::Left);
         gesture.drag = Some(setup());
