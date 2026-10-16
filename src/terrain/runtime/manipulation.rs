@@ -444,6 +444,157 @@ mod tests {
         assert_eq!(Axis::ALL.map(Axis::index), [0, 1, 2]);
     }
 
+
+    fn pick_ray(x: f32, z: f32) -> Ray3d {
+        Ray3d::new(Vec3::new(x, 10.0, z), Dir3::NEG_Y)
+    }
+
+    #[test]
+    fn translating_and_scaling_never_change_canonical_data_mid_drag() {
+        let original = object(1, 0.0);
+        let mut state = TerrainWorkshopState::default();
+        let drag = Drag {
+            start: original.clone(),
+            axis: Axis::X,
+            mode: GizmoMode::Move,
+            length: 3.0,
+            scalar: 0.5,
+            direction: Vec3::ZERO,
+        };
+        let moved = update_candidate(
+            &drag, pick_ray(2.0, 0.0), &state, &[], false, false,
+        ).unwrap();
+        assert_eq!(moved.position[0], 1.5);
+        assert_eq!(original.position[0], 0.0);
+        let fine = update_candidate(
+            &drag, pick_ray(2.0, 0.0), &state, &[], true, false,
+        ).unwrap();
+        assert!((fine.position[0] - 0.3).abs() < 1e-5);
+        state.snap_enabled = true;
+        state.snap_grid = 1.0;
+        let snapped = update_candidate(
+            &drag, pick_ray(2.0, 0.0), &state, &[], false, false,
+        ).unwrap();
+        assert_eq!(snapped.position[0], 2.0);
+        let ignored = update_candidate(
+            &drag, pick_ray(2.0, 0.0), &state, &[], false, true,
+        ).unwrap();
+        assert_eq!(ignored.position[0], 1.5);
+
+        let scale_drag = Drag { mode: GizmoMode::Scale, ..drag };
+        state.snap_enabled = false;
+        state.uniform_scale = true;
+        let scaled = update_candidate(
+            &scale_drag, pick_ray(1.5, 0.0), &state, &[], false, false,
+        ).unwrap();
+        assert_eq!(scaled.size, [4.0, 4.0, 4.0]);
+        state.uniform_scale = false;
+        let scaled_one = update_candidate(
+            &scale_drag, pick_ray(1.5, 0.0), &state, &[], false, false,
+        ).unwrap();
+        assert_eq!(scaled_one.size, [4.0, 2.0, 2.0]);
+        assert_eq!(original.size, [2.0; 3]);
+    }
+
+    #[test]
+    fn vertical_motion_allows_partial_burial() {
+        let original = object(1, 0.0);
+        let state = TerrainWorkshopState::default();
+        let drag = Drag {
+            start: original,
+            axis: Axis::Y,
+            mode: GizmoMode::Move,
+            length: 3.0,
+            scalar: 0.0,
+            direction: Vec3::ZERO,
+        };
+        let ray = Ray3d::new(Vec3::new(8.0, 0.4, 0.0), Dir3::NEG_X);
+        let buried = update_candidate(&drag, ray, &state, &[], false, false).unwrap();
+        assert!((buried.position[1] - 0.4).abs() < 1e-5);
+        assert_eq!(buried.size, [2.0; 3]);
+    }
+
+    #[test]
+    fn signed_rotation_and_snap_are_deterministic() {
+        let starting = object(1, 0.0);
+        let mut state = TerrainWorkshopState::default();
+        let drag = Drag {
+            start: starting,
+            axis: Axis::Y,
+            mode: GizmoMode::Rotate,
+            length: 3.0,
+            scalar: 0.0,
+            direction: Vec3::X,
+        };
+        let turned = update_candidate(
+            &drag, pick_ray(0.0, 1.0), &state, &[], false, false,
+        ).unwrap();
+        assert!((turned.rotation_degrees[1] + 90.0).abs() < 1e-5);
+        state.snap_enabled = true;
+        state.snap_angle = 15.0;
+        let snapped = update_candidate(
+            &drag, pick_ray(0.6, 0.8), &state, &[], false, false,
+        ).unwrap();
+        assert!(snapped.rotation_degrees[1] % 15.0 == 0.0);
+    }
+
+    #[test]
+    fn cancel_and_commit_are_atomic_and_keep_history_exact() {
+        use crate::terrain::scene::{ReferenceScene, TerrainScene};
+        let mut active = ActiveTerrain::default();
+        active.scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let original = object(1, 0.0);
+        active.scene.obstacles.push(original.clone());
+        let mut state = TerrainWorkshopState::default();
+        state.open = true;
+        state.mode = WorkshopMode::Edit;
+        state.tool = EditorTool::Select;
+        state.selected = Some(1);
+        let mut sync = TerrainSync::default();
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let mut mouse = ButtonInput::<MouseButton>::default();
+        let mut gesture = GizmoGesture::default();
+        let setup = || Drag {
+            start: original.clone(), axis: Axis::X, mode: GizmoMode::Move,
+            length: 3.0, scalar: 0.5, direction: Vec3::ZERO,
+        };
+        mouse.press(MouseButton::Left);
+        gesture.drag = Some(setup());
+        gesture.candidate = Some(original.clone());
+        assert!(interact(&mut gesture, &mut state, &mut active, &mut sync,
+            &UiInputCapture::default(), &mouse, &mut keys, true,
+            Some(pick_ray(2.0, 0.0)), Vec3::new(0.0, 10.0, 0.0)));
+        assert_ne!(gesture.candidate.as_ref().unwrap(), &original);
+        assert_eq!(active.scene.obstacles[0], original);
+        assert_eq!(active.history.undo_len(), 0);
+        mouse.press(MouseButton::Right);
+        assert!(interact(&mut gesture, &mut state, &mut active, &mut sync,
+            &UiInputCapture::default(), &mouse, &mut keys, true,
+            None, Vec3::new(0.0, 10.0, 0.0)));
+        assert!(gesture.drag.is_none());
+        assert!(gesture.candidate.is_none());
+        assert!(gesture.block_orbit);
+        assert_eq!(active.scene.obstacles[0], original);
+        assert_eq!(active.history.undo_len(), 0);
+
+        mouse.clear();
+        mouse.press(MouseButton::Left);
+        gesture.drag = Some(setup());
+        gesture.candidate = Some(original.clone());
+        assert!(interact(&mut gesture, &mut state, &mut active, &mut sync,
+            &UiInputCapture::default(), &mouse, &mut keys, true,
+            Some(pick_ray(2.0, 0.0)), Vec3::new(0.0, 10.0, 0.0)));
+        mouse.release(MouseButton::Left);
+        assert!(interact(&mut gesture, &mut state, &mut active, &mut sync,
+            &UiInputCapture::default(), &mouse, &mut keys, true,
+            None, Vec3::new(0.0, 10.0, 0.0)));
+        assert_eq!(active.history.undo_len(), 1);
+        assert_eq!(active.scene.obstacles[0].position[0], 1.5);
+        assert!(active.history.undo(&mut active.scene));
+        assert_eq!(active.scene.obstacles[0], original);
+        assert!(active.history.redo(&mut active.scene));
+        assert_eq!(active.scene.obstacles[0].position[0], 1.5);
+    }
     #[test]
     fn click_without_change_does_not_modify_the_baseline() {
         let starting = object(1, 0.0);
