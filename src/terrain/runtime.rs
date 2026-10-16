@@ -384,10 +384,21 @@ fn process_actions(
     mut active: ResMut<ActiveTerrain>,
     mut sync: ResMut<TerrainSync>,
     mut gesture: ResMut<EditorGesture>,
+    mut gizmo: ResMut<GizmoGesture>,
     mut camera: ResMut<EditorCamera>,
 ) {
     let actions = std::mem::take(&mut state.actions);
     for action in actions {
+        if gizmo.drag.is_some() {
+            gizmo.drag = None;
+            gizmo.candidate = None;
+            // Undo/Redo during an unfinished drag only cancels that drag.
+            // Other explicit actions can continue after the transient preview
+            // has been safely discarded.
+            if matches!(action, WorkshopAction::Undo | WorkshopAction::Redo) {
+                continue;
+            }
+        }
         finish_stroke(&mut gesture, &mut active);
         let start = Instant::now();
         let result = apply_action(
