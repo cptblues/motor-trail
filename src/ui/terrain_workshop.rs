@@ -1163,6 +1163,7 @@ fn objects(
     spawn: &VehicleSpawn,
     draft: &mut UiDraft,
     action: &mut Option<WorkshopAction>,
+    show_gallery: bool,
 ) {
     ui.heading("Objets");
     ui.horizontal_wrapped(|ui| {
@@ -1271,6 +1272,7 @@ fn objects(
                 });
         });
 
+    if show_gallery {
     egui::CollapsingHeader::new("Ajouter un asset")
         .id_salt("add_asset_docked")
         .default_open(true)
@@ -1312,6 +1314,7 @@ fn objects(
                 });
         });
 
+    }
     egui::CollapsingHeader::new("Reglages avances des gizmos")
         .id_salt("advanced_gizmo_docked")
         .default_open(false)
