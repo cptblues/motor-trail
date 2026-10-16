@@ -1407,6 +1407,8 @@ mod tests {
         .init_resource::<EditorGesture>()
         .init_resource::<EditorCamera>()
         .init_resource::<PlacementPreview>()
+        .init_resource::<GizmoGesture>()
+        .init_resource::<ManipulationPreview>()
         .init_resource::<ButtonInput<MouseButton>>()
         .insert_resource(ActiveTerrain {
             scene,
@@ -1420,7 +1422,9 @@ mod tests {
         .add_systems(Update, process_actions.before(crate::controls))
         .add_systems(
             PostUpdate,
-            placement_preview::render.before(bevy::transform::TransformSystems::Propagate),
+            (placement_preview::render, manipulation::render)
+                .chain()
+                .before(bevy::transform::TransformSystems::Propagate),
         )
         .add_systems(
             FixedUpdate,
