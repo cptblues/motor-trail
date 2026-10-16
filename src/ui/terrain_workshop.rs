@@ -19,7 +19,9 @@ pub struct TerrainWorkshopPlugin;
 /// before egui has laid out this frame, so it reuses these previous bounds.
 #[derive(Resource, Default, Clone, Copy)]
 pub struct WorkshopDockBounds {
-    pub rect: Option<egui::Rect>,
+    /// Top command bar, left tools, right inspector, bottom asset shelf.
+    /// Previous-frame rectangles are consulted by PreUpdate mouse capture.
+    pub rects: [Option<egui::Rect>; 4],
 }
 
 impl Plugin for TerrainWorkshopPlugin {
@@ -244,6 +246,7 @@ struct WorkshopUi {
     draft: UiDraft,
     snapshot: Option<FrameSnapshot>,
     committed_frame: Option<u64>,
+    bounds: [Option<egui::Rect>; 4],
 }
 
 impl WorkshopUi {
@@ -371,7 +374,7 @@ fn terrain_workshop_ui(
     mut local: Local<WorkshopUi>,
 ) -> Result {
     if !state.open {
-        dock.rect = None;
+        dock.rects = [None; 4];
         return Ok(());
     }
     let terrain = &active.scene.terrain;
@@ -399,10 +402,8 @@ fn terrain_workshop_ui(
         ground_height: &ground_height,
         preview_object: manipulation.candidate.as_ref(),
     };
-    dock.rect = show_workshop(contexts.ctx_mut()?, &mut state, &view, &mut local);
-    if !state.open {
-        dock.rect = None;
-    }
+    show_workshop(contexts.ctx_mut()?, &mut state, &view, &mut local);
+    dock.rects = if state.open { local.bounds } else { [None; 4] };
     Ok(())
 }
 
@@ -413,13 +414,11 @@ fn show_workshop(
     local: &mut WorkshopUi,
 ) -> Option<egui::Rect> {
     if !state.open {
+        local.bounds = [None; 4];
         return None;
     }
-    if local
-        .snapshot
-        .as_ref()
-        .is_none_or(|snapshot| snapshot.frame != ctx.cumulative_frame_nr())
-    {
+    if local.snapshot.as_ref().is_none_or(|snapshot|
+        snapshot.frame != ctx.cumulative_frame_nr()) {
         local.sync_selection(state, view);
     }
     let (mut controls, mut draft) = local.begin_frame(ctx, state);
@@ -431,139 +430,266 @@ fn show_workshop(
     let mut action = None;
     let mut open = controls.open;
     let screen = ctx.content_rect();
-    // Panels reserve a persistent, predictable part of the usable screen;
-    // unlike a floating window they do not cover the object being edited.
-    let side = draft.dock.is_right(screen.width());
-    // egui 0.36 panels operate on a root Ui rather than directly on Context.
-    let mut viewport_ui = egui::Ui::new(
+    // The egui 0.36 Panel API consumes a root Ui. Reuse ONE root so each
+    // panel subtracts its space: the terrain viewport remains unobstructed.
+    let mut root = egui::Ui::new(
         ctx.clone(),
-        "motor_trail_workshop_viewport".into(),
+        "motor_trail_builder_root".into(),
         egui::UiBuilder::new()
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
+    let wide = screen.width() >= 1000.0 && draft.dock.is_right(screen.width());
     let files = state.files.clone();
     let status = state.status.clone();
     let error = state.last_error.clone();
-    let mut draw = |ui: &mut egui::Ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(7.0, 5.0);
-        ui.horizontal(|ui| {
-            ui.heading("Motor Trail · Terrain");
-            if ui.small_button("Masquer [T]")
-                .on_hover_text("Masquer le panneau et explorer sans obstacle")
-                .clicked()
-            {
-                open = false;
-            }
-        });
-        let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Enregistrer")
-                .on_hover_text("Sauvegarde rapide de la map actuelle")
-                .clicked()
-            {
-                if view.file.is_some() {
-                    enqueue(&mut action, WorkshopAction::Save);
-                } else if files.iter().any(|n|
-                    same_scene_file(n, &controls.scene_name)) {
-                    draft.confirmation = Some(Confirmation::SaveAs(controls.scene_name.clone()));
-                } else {
-                    enqueue(&mut action, WorkshopAction::SaveAs(controls.scene_name.clone()));
-                }
-            }
-            if let Some(file) = view.file {
-                ui.small(format!("Fichier : {file}"));
-            } else {
-                ui.small("Pas encore de fichier");
-            }
-        });
-        if !status.is_empty() {
-            ui.label(&status);
-        }
-        if let Some(error) = &error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        ui.horizontal_wrapped(|ui| {
-            for tab in WorkshopTab::MAIN {
-                ui.selectable_value(&mut draft.tab, tab, tab.label());
-            }
-            ui.menu_button("Plus", |ui| {
-                if ui.selectable_label(draft.tab == WorkshopTab::Diagnostic, "Diagnostics").clicked() {
-                    draft.tab = WorkshopTab::Diagnostic;
-                    ui.close();
-                }
-                ui.separator();
-                ui.label("Position du panneau");
-                for (dock, label) in [
-                    (EditorDock::Auto, "Automatique"),
-                    (EditorDock::Right, "A droite"),
-                    (EditorDock::Bottom, "En bas"),
-                ] {
-                    if ui.selectable_value(&mut draft.dock, dock, label).clicked() {
-                        ui.close();
-                    }
-                }
-                ui.separator();
-                ui.checkbox(&mut controls.legacy_pan_direction, "Ancien sens du clic molette")
-                    .on_hover_text("Retrouver le sens de deplacement d'avant Editor V2");
-            });
-        });
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .id_salt(("terrain_workshop_body", draft.tab as u8))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                match draft.tab {
-                    WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
-                    WorkshopTab::Sculpture => sculpture(ui, &mut controls),
-                    WorkshopTab::Objects => {
-                        objects(ui, &mut controls, view.obstacles, view.groups,
-                            view.compositions, view.spawn, &mut draft, &mut action)
-                    }
-                    WorkshopTab::Scenes => {
-                        scene_files(
-                            ui, &mut controls, &files, view.file, &mut draft, &mut action,
-                        );
-                        egui::CollapsingHeader::new("Avance : point de depart du vehicule")
-                            .default_open(false)
+    let background = egui::Color32::from_rgb(25, 36, 47);
+    let active = egui::Color32::from_rgb(98, 226, 155);
+    let mut bounds = [None; 4];
+
+    // Command bar: only existing, working gameplay/editor modes are shown.
+    bounds[0] = Some(egui::Panel::top("motor_trail_builder_commands")
+        .resizable(false)
+        .default_size(55.0)
+        .show(&mut root, |ui| {
+            ui.visuals_mut().panel_fill = background;
+            egui::Frame::new().fill(background)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("▲  MOTOR TRAIL")
+                            .size(18.0).strong().color(active));
+                        ui.separator();
+                        if wide {
+                            ui.label(egui::RichText::new("ÉDITEUR DE MAP")
+                                .small().color(egui::Color32::LIGHT_GRAY));
+                        }
+                        for (tab, label) in [
+                            (WorkshopTab::Generation, "Terrain"),
+                            (WorkshopTab::Sculpture, "Sculpter"),
+                            (WorkshopTab::Objects, "Objets"),
+                            (WorkshopTab::Scenes, "Scènes"),
+                        ] {
+                            if ui.selectable_label(draft.tab == tab, label).clicked() {
+                                draft.tab = tab;
+                                if tab == WorkshopTab::Objects {
+                                    controls.tool = EditorTool::Select;
+                                } else if tab == WorkshopTab::Sculpture {
+                                    controls.tool = EditorTool::Sculpt;
+                                }
+                            }
+                        }
+                        ui.separator();
+                        if wide { ui.label(view.scene_name); }
+                        let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
+                        if ui.button("Sauvegarder").clicked() {
+                            if view.file.is_some() {
+                                enqueue(&mut action, WorkshopAction::Save);
+                            } else if files.iter().any(|name|
+                                same_scene_file(name, &controls.scene_name)) {
+                                draft.confirmation = Some(Confirmation::SaveAs(controls.scene_name.clone()));
+                            } else {
+                                enqueue(&mut action, WorkshopAction::SaveAs(controls.scene_name.clone()));
+                            }
+                        }
+                        ui.menu_button("⋯", |ui| {
+                            if ui.button("Diagnostics").clicked() {
+                                draft.tab = WorkshopTab::Diagnostic;
+                                ui.close();
+                            }
+                            ui.separator();
+                            ui.label("Affichage");
+                            for (dock, label) in [
+                                (EditorDock::Auto, "Automatique"),
+                                (EditorDock::Right, "Atelier complet"),
+                                (EditorDock::Bottom, "Atelier compact"),
+                            ] {
+                                if ui.selectable_value(&mut draft.dock, dock, label).clicked() {
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut controls.legacy_pan_direction, "Panoramique historique");
+                            if ui.button("Masquer l'éditeur [T]").clicked() {
+                                open = false;
+                                ui.close();
+                            }
+                        });
+                    });
+                });
+        }).response.rect);
+
+    if wide {
+        bounds[1] = Some(egui::Panel::left("motor_trail_builder_tools")
+            .resizable(false)
+            .default_size(110.0)
+            .show(&mut root, |ui| {
+                ui.visuals_mut().panel_fill = background;
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.small(egui::RichText::new("OUTILS").color(active));
+                            ui.separator();
+                            for (tab, label) in [
+                                (WorkshopTab::Generation, "▲ Terrain"),
+                                (WorkshopTab::Sculpture, "✎ Sculpter"),
+                                (WorkshopTab::Objects, "◈ Objets"),
+                                (WorkshopTab::Scenes, "▤ Scènes"),
+                            ] {
+                                if ui.add_sized([92.0, 37.0],
+                                    egui::Button::new(label).selected(draft.tab == tab)
+                                ).clicked() {
+                                    draft.tab = tab;
+                                    if tab == WorkshopTab::Objects {
+                                        controls.tool = EditorTool::Select;
+                                    } else if tab == WorkshopTab::Sculpture {
+                                        controls.tool = EditorTool::Sculpt;
+                                    }
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Masquer [T]").clicked() { open = false; }
+                        });
+                    });
+            }).response.rect);
+        bounds[2] = Some(egui::Panel::right("motor_trail_builder_inspector")
+            .resizable(true)
+            .default_size(328.0)
+            .min_size(280.0)
+            .max_size((screen.width() * 0.34).min(440.0))
+            .show(&mut root, |ui| {
+                ui.visuals_mut().panel_fill = background;
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.heading(egui::RichText::new(match draft.tab {
+                                WorkshopTab::Generation => "Générer le terrain",
+                                WorkshopTab::Sculpture => "Sculpter",
+                                WorkshopTab::Objects => "Sélection et propriétés",
+                                WorkshopTab::Scenes => "Gestion des scènes",
+                                WorkshopTab::Diagnostic => "Diagnostics",
+                            }).color(egui::Color32::WHITE));
+                        });
+                        if !status.is_empty() { ui.small(&status); }
+                        if let Some(error) = &error {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .id_salt(("builder_inspector", draft.tab as u8))
+                            .auto_shrink([false,false])
                             .show(ui, |ui| {
-                                spawn_controls(
-                                    ui, &controls, &mut draft, view.ground_height, &mut action,
-                                );
+                                match draft.tab {
+                                    WorkshopTab::Generation =>
+                                        generation(ui, &mut controls, &mut draft),
+                                    WorkshopTab::Sculpture =>
+                                        sculpture(ui, &mut controls),
+                                    WorkshopTab::Objects =>
+                                        objects(ui, &mut controls, view.obstacles, view.groups,
+                                            view.compositions, view.spawn, &mut draft, &mut action, false),
+                                    WorkshopTab::Scenes => {
+                                        scene_files(ui, &mut controls, &files, view.file, &mut draft, &mut action);
+                                        egui::CollapsingHeader::new("Avancé : départ du véhicule")
+                                            .default_open(false)
+                                            .show(ui, |ui| spawn_controls(
+                                                ui, &controls, &mut draft, view.ground_height, &mut action,
+                                            ));
+                                    }
+                                    WorkshopTab::Diagnostic =>
+                                        diagnostics(ui, view),
+                                }
+                                if draft.confirmation.is_some() {
+                                    ui.separator();
+                                    confirmation_controls(ui, &mut draft, &mut action);
+                                }
                             });
-                    }
-                    WorkshopTab::Diagnostic => diagnostics(ui, view),
-                }
-                if draft.confirmation.is_some() {
-                    ui.separator();
-                    confirmation_controls(ui, &mut draft, &mut action);
-                }
-            });
-        ui.separator();
-        ui.small("Molette : zoom · Clic molette : deplacer · Clic droit : orienter · T : masquer");
-    };
-    let rect = if side {
-        let max_width = (screen.width() * 0.45).min(480.0).max(270.0);
-        egui::Panel::right("motor_trail_workshop_dock_right")
+                    });
+            }).response.rect);
+        bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_asset_shelf")
             .resizable(true)
-            .default_size(380.0_f32.min(max_width))
-            .min_size(265.0_f32.min(max_width))
-            .max_size(max_width)
-            .show(&mut viewport_ui, &mut draw)
-            .response.rect
+            .default_size(201.0)
+            .min_size(105.0)
+            .max_size((screen.height() * 0.42).max(160.0))
+            .show(&mut root, |ui| {
+                ui.visuals_mut().panel_fill = background;
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(9))
+                    .show(ui, |ui| {
+                        if draft.tab == WorkshopTab::Objects {
+                            if let Some(kind) = super::terrain_catalogue::catalogue_strip(
+                                ui, controls.object_kind, &mut draft.asset_query,
+                                &mut draft.asset_category,
+                            ) {
+                                controls.choose_kind(kind);
+                            }
+                            ui.horizontal_wrapped(|ui| {
+                                ui.selectable_value(&mut controls.placement_mode,
+                                    PlacementMode::Single, "Pose unique");
+                                ui.selectable_value(&mut controls.placement_mode,
+                                    PlacementMode::Multiple, "Pose multiple");
+                                ui.label("Cliquer un modèle puis cliquer dans la scène");
+                            });
+                        } else {
+                            ui.strong("MOTOR TRAIL  •  ATELIER");
+                            ui.separator();
+                            ui.label("Sélectionnez « Objets » pour afficher la bibliothèque d'assets.");
+                        }
+                    });
+            }).response.rect);
     } else {
-        let height = (screen.height() * 0.37).clamp(185.0, 400.0);
-        egui::Panel::bottom("motor_trail_workshop_dock_bottom")
+        // Responsive fallback: a single compact dock keeps the central scene
+        // visible on 360px windows without forcing three cramped columns.
+        bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_compact")
             .resizable(true)
-            .default_size(height)
-            .min_size(155.0_f32.min(screen.height() * 0.45))
-            .max_size((screen.height() * 0.65).max(155.0))
-            .show(&mut viewport_ui, &mut draw)
-            .response.rect
-    };
+            .default_size((screen.height() * 0.45).clamp(190.0, 420.0))
+            .min_size(125.0)
+            .max_size((screen.height() * 0.72).max(180.0))
+            .show(&mut root, |ui| {
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.strong("Atelier");
+                            if ui.button("Masquer [T]").clicked() { open = false; }
+                        });
+                        egui::ScrollArea::vertical()
+                            .id_salt(("builder_compact", draft.tab as u8))
+                            .show(ui, |ui| {
+                                match draft.tab {
+                                    WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
+                                    WorkshopTab::Sculpture => sculpture(ui, &mut controls),
+                                    WorkshopTab::Objects => objects(
+                                        ui, &mut controls, view.obstacles, view.groups,
+                                        view.compositions, view.spawn, &mut draft, &mut action, true,
+                                    ),
+                                    WorkshopTab::Scenes => {
+                                        scene_files(ui, &mut controls, &files, view.file, &mut draft, &mut action);
+                                        egui::CollapsingHeader::new("Avancé : départ du véhicule")
+                                            .default_open(false)
+                                            .show(ui, |ui| spawn_controls(
+                                                ui, &controls, &mut draft, view.ground_height, &mut action,
+                                            ));
+                                    }
+                                    WorkshopTab::Diagnostic => diagnostics(ui, view),
+                                }
+                                if draft.confirmation.is_some() {
+                                    ui.separator();
+                                    confirmation_controls(ui, &mut draft, &mut action);
+                                }
+                            });
+                    });
+            }).response.rect);
+    }
+
+    // The layout uses Background-layer panels. Their exact surfaces are passed
+    // to PreUpdate capture so dragging sliders/scrollbars cannot sculpt or pan
+    // the world underneath, even when the mouse leaves a button.
+    local.bounds = bounds;
     controls.open = open;
     local.commit(ctx, state, &mut controls, &mut draft, action);
-    Some(rect)
+    if wide { bounds[2] } else { bounds[3] }
 }
 
 fn toolbar(
