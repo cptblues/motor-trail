@@ -231,6 +231,7 @@ pub(super) fn interact(
         && state.tool == EditorTool::Select && focused && !sync.full_reload;
     if gesture.drag.is_some() {
         let cancelled = !allowed || capture.keyboard
+            || keys.pressed(KeyCode::Space)
             || keys.just_pressed(KeyCode::Escape)
             || mouse.just_pressed(MouseButton::Right)
             || selected.is_none()
@@ -335,7 +336,8 @@ pub(super) fn interact(
     gesture.candidate = None;
     gesture.candidates.clear();
     gesture.handle = None;
-    if !allowed || capture.pointer || capture.keyboard || selected.is_none() {
+    if !allowed || capture.pointer || capture.keyboard
+        || keys.pressed(KeyCode::Space) || selected.is_none() {
         return false;
     }
     if keys.just_pressed(KeyCode::KeyG) { state.gizmo_mode = GizmoMode::Move; }
