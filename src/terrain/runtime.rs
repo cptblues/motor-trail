@@ -2941,3 +2941,16 @@ mod tests {
         }
     }
 }
+
+
+#[cfg(test)]
+mod editor_placement_mode_tests {
+    use super::*;
+
+    #[test]
+    fn single_place_selects_while_multiple_keeps_placing() {
+        assert_eq!(PlacementMode::Single.next_tool(), EditorTool::Select);
+        assert_eq!(PlacementMode::Multiple.next_tool(), EditorTool::Place);
+        assert_eq!(PlacementMode::default(), PlacementMode::Single);
+    }
+}
