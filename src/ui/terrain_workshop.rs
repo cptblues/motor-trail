@@ -32,6 +32,9 @@ enum WorkshopTab {
 }
 
 impl WorkshopTab {
+    const MAIN: [Self; 4] = [
+        Self::Generation, Self::Sculpture, Self::Objects, Self::Scenes,
+    ];
     const ALL: [Self; 5] = [
         Self::Generation,
         Self::Sculpture,
@@ -114,6 +117,24 @@ impl SpawnDraft {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum EditorDock {
+    #[default]
+    Auto,
+    Right,
+    Bottom,
+}
+
+impl EditorDock {
+    fn is_right(self, width: f32) -> bool {
+        match self {
+            Self::Auto => width >= 880.0,
+            Self::Right => width >= 560.0,
+            Self::Bottom => false,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct UiDraft {
     tab: WorkshopTab,
@@ -128,6 +149,7 @@ struct UiDraft {
     quick_relief: Option<u8>,
     group_name: String,
     composition_name: String,
+    dock: EditorDock,
 }
 
 /// Only editable controls are copied. Files, heightmaps and object lists stay borrowed.
@@ -149,6 +171,7 @@ struct Controls {
     snap_grid: f32,
     snap_angle: f32,
     uniform_scale: bool,
+    legacy_pan_direction: bool,
     placement_yaws: Vec<(ObstacleKind, f32)>,
     selected: Option<u64>,
     selected_ids: Vec<u64>,
@@ -187,6 +210,7 @@ impl Controls {
             snap_grid: state.snap_grid,
             snap_angle: state.snap_angle,
             uniform_scale: state.uniform_scale,
+            legacy_pan_direction: state.legacy_pan_direction,
             placement_yaws: ObstacleKind::catalogue()
                 .map(|kind| (kind, state.placement_yaw_degrees(kind)))
                 .collect(),
@@ -296,6 +320,7 @@ impl WorkshopUi {
         state.snap_grid = controls.snap_grid.clamp(0.05, 5.0);
         state.snap_angle = controls.snap_angle.clamp(1.0, 90.0);
         state.uniform_scale = controls.uniform_scale;
+        state.legacy_pan_direction = controls.legacy_pan_direction;
         state.selected = controls.selected;
         state.selected_ids = controls.selected_ids.clone();
         state.scene_name.clone_from(&controls.scene_name);
@@ -393,79 +418,121 @@ fn show_workshop(
     let mut action = None;
     let mut open = controls.open;
     let screen = ctx.content_rect();
-    let maximum = (screen.size() - egui::vec2(16.0, 16.0)).max(egui::vec2(1.0, 1.0));
-    let width = 560.0_f32.min(maximum.x);
-    let result = egui::Window::new("Motor Trail | Terrain [T]")
-        .id(egui::Id::new("motor_trail_terrain_workshop"))
-        .open(&mut open)
-        .movable(true)
-        .resizable(true)
-        .collapsible(false)
-        .constrain_to(screen)
-        .default_pos(egui::pos2(
-            (screen.right() - width - 24.0).max(screen.left()),
-            screen.top() + 76.0,
-        ))
-        .default_size(egui::vec2(width, 650.0_f32.min(maximum.y)))
-        .min_size(egui::vec2(
-            280.0_f32.min(maximum.x),
-            180.0_f32.min(maximum.y),
-        ))
-        .max_size(maximum)
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
-            let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
-            if !state.status.is_empty() {
-                ui.label(&state.status);
+    // Panels reserve a persistent, predictable part of the usable screen;
+    // unlike a floating window they do not cover the object being edited.
+    let side = draft.dock.is_right(screen.width());
+    let mut draw = |ui: &mut egui::Ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(7.0, 5.0);
+        ui.horizontal(|ui| {
+            ui.heading("Motor Trail · Terrain");
+            if ui.small_button("Masquer [T]")
+                .on_hover_text("Masquer le panneau et explorer sans obstacle")
+                .clicked()
+            {
+                open = false;
             }
-            if let Some(error) = &state.last_error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
+        });
+        let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Enregistrer")
+                .on_hover_text("Sauvegarde rapide de la map actuelle")
+                .clicked()
+            {
+                if view.file.is_some() {
+                    enqueue(&mut action, WorkshopAction::Save);
+                } else if state.files.iter().any(|n|
+                    same_scene_file(n, &controls.scene_name)) {
+                    draft.confirmation = Some(Confirmation::SaveAs(controls.scene_name.clone()));
+                } else {
+                    enqueue(&mut action, WorkshopAction::SaveAs(controls.scene_name.clone()));
+                }
             }
-            ui.horizontal_wrapped(|ui| {
-                for tab in WorkshopTab::ALL {
-                    ui.selectable_value(&mut draft.tab, tab, tab.label());
+            ui.label(if view.file.is_some() { "Map enregistree" } else { "Map non sauvegardee" });
+        });
+        if !state.status.is_empty() {
+            ui.label(&state.status);
+        }
+        if let Some(error) = &state.last_error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        ui.horizontal_wrapped(|ui| {
+            for tab in WorkshopTab::MAIN {
+                ui.selectable_value(&mut draft.tab, tab, tab.label());
+            }
+            ui.menu_button("Plus", |ui| {
+                if ui.selectable_label(draft.tab == WorkshopTab::Diagnostic, "Diagnostics").clicked() {
+                    draft.tab = WorkshopTab::Diagnostic;
+                    ui.close();
+                }
+                ui.separator();
+                ui.label("Position du panneau");
+                for (dock, label) in [
+                    (EditorDock::Auto, "Automatique"),
+                    (EditorDock::Right, "A droite"),
+                    (EditorDock::Bottom, "En bas"),
+                ] {
+                    if ui.selectable_value(&mut draft.dock, dock, label).clicked() {
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                ui.checkbox(&mut controls.legacy_pan_direction, "Ancien sens du clic molette")
+                    .on_hover_text("Retrouver le sens de deplacement d'avant Editor V2");
+            });
+        });
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt(("terrain_workshop_body", draft.tab as u8))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                match draft.tab {
+                    WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
+                    WorkshopTab::Sculpture => sculpture(ui, &mut controls),
+                    WorkshopTab::Objects => {
+                        objects(ui, &mut controls, view.obstacles, view.groups,
+                            view.compositions, view.spawn, &mut draft, &mut action)
+                    }
+                    WorkshopTab::Scenes => {
+                        scene_files(
+                            ui, &mut controls, &state.files, view.file, &mut draft, &mut action,
+                        );
+                        ui.separator();
+                        spawn_controls(
+                            ui, &controls, &mut draft, view.ground_height, &mut action,
+                        );
+                    }
+                    WorkshopTab::Diagnostic => diagnostics(ui, view),
+                }
+                if draft.confirmation.is_some() {
+                    ui.separator();
+                    confirmation_controls(ui, &mut draft, &mut action);
                 }
             });
-            ui.separator();
-            egui::ScrollArea::both()
-                .id_salt(("terrain_workshop_body", draft.tab as u8))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    match draft.tab {
-                        WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
-                        WorkshopTab::Sculpture => sculpture(ui, &mut controls),
-                        WorkshopTab::Objects => {
-                            objects(ui, &mut controls, view.obstacles, view.groups, view.compositions, view.spawn, &mut draft, &mut action)
-                        }
-                        WorkshopTab::Scenes => {
-                            scene_files(
-                                ui,
-                                &mut controls,
-                                &state.files,
-                                view.file,
-                                &mut draft,
-                                &mut action,
-                            );
-                            ui.separator();
-                            spawn_controls(
-                                ui,
-                                &controls,
-                                &mut draft,
-                                view.ground_height,
-                                &mut action,
-                            );
-                        }
-                        WorkshopTab::Diagnostic => diagnostics(ui, view),
-                    }
-                    if draft.confirmation.is_some() {
-                        ui.separator();
-                        confirmation_controls(ui, &mut draft, &mut action);
-                    }
-                });
-        });
+        ui.separator();
+        ui.small("Molette : zoom · Clic molette : deplacer · Clic droit : orienter · T : masquer");
+    };
+    let rect = if side {
+        let max_width = (screen.width() * 0.45).min(480.0).max(270.0);
+        egui::SidePanel::right("motor_trail_workshop_dock_right")
+            .resizable(true)
+            .default_width(380.0_f32.min(max_width))
+            .min_width(265.0_f32.min(max_width))
+            .max_width(max_width)
+            .show(ctx, &mut draw)
+            .response.rect
+    } else {
+        let height = (screen.height() * 0.37).clamp(185.0, 400.0);
+        egui::TopBottomPanel::bottom("motor_trail_workshop_dock_bottom")
+            .resizable(true)
+            .default_height(height)
+            .min_height(155.0_f32.min(screen.height() * 0.45))
+            .max_height((screen.height() * 0.65).max(155.0))
+            .show(ctx, &mut draw)
+            .response.rect
+    };
     controls.open = open;
     local.commit(ctx, state, &mut controls, &mut draft, action);
-    result.map(|result| result.response.rect)
+    Some(rect)
 }
 
 fn toolbar(
