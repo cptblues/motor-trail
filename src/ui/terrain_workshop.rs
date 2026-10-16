@@ -657,6 +657,7 @@ fn show_workshop(
                             });
                     });
             }).response.rect);
+        if draft.tab == WorkshopTab::Objects {
         bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_asset_shelf")
             .resizable(true)
             .default_size(254.0)
@@ -693,6 +694,7 @@ fn show_workshop(
                         }
                     });
             }).response.rect);
+        }
     } else {
         // Responsive fallback: a single compact dock keeps the central scene
         // visible on 360px windows without forcing three cramped columns.
@@ -2363,6 +2365,16 @@ mod tests {
     }
 
     #[test]
+    fn resized_shelf_never_allows_height_below_its_controls() {
+        for viewport in [480.0, 600.0, 740.0, 900.0, 1440.0] {
+            let minimum = builder_shelf_min_height(viewport);
+            assert!(minimum >= 225.0);
+            assert!(minimum <= 250.0);
+            assert!(minimum <= (viewport * 0.48).max(250.0));
+        }
+    }
+
+    #[test]
     fn all_tabs_render_at_desktop_and_narrow_sizes_without_mutating_live_values() {
         for size in [egui::vec2(1440.0, 900.0), egui::vec2(360.0, 740.0)] {
             for tab in WorkshopTab::ALL {
@@ -2421,15 +2433,28 @@ mod tests {
                     assert!(diagnostic_visible, "diagnostic tab should show its title");
                 }
                 assert!(passes >= 2);
-                let rect = rect.expect("visible docked editor");
-                assert!(rect.is_finite());
-                if size.x >= 880.0 {
-                    assert!(rect.width() < size.x * 0.6, "dock must leave the world visible: {rect:?}");
-                    assert!(rect.right() >= size.x - 8.0, "dock should remain on the right: {rect:?}");
+                // The four-panel builder returns the inspector rect, not
+                // the former single dock. In driving mode only the thin top
+                // status bar remains; here the scene is in creation mode.
+                let panel = if size.x >= 1000.0 {
+                    local.bounds[2].expect("wide inspector must remain visible")
                 } else {
-                    assert!(rect.height() < size.y * 0.75, "bottom dock should leave the terrain visible: {rect:?}");
-                    assert!(rect.bottom() >= size.y - 8.0, "bottom dock should stay anchored: {rect:?}");
+                    local.bounds[3].expect("compact bottom dock must remain visible")
+                };
+                assert!(panel.is_finite());
+                assert!(local.bounds[0].is_some(), "command bar must be visible");
+                if size.x >= 1000.0 {
+                    assert!(panel.width() < size.x * 0.6, "inspector must leave the terrain visible: {panel:?}");
+                    assert!(panel.right() >= size.x - 8.0, "inspector must stay on right: {panel:?}");
+                    assert_eq!(local.bounds[3].is_some(), tab == WorkshopTab::Objects,
+                        "asset shelf should not waste terrain space outside Objects");
+                } else {
+                    assert!(panel.height() < size.y * 0.75, "compact dock should leave terrain visible: {panel:?}");
+                    assert!(panel.bottom() >= size.y - 8.0, "compact dock must remain anchored: {panel:?}");
                 }
+                // show_workshop deliberately returns the current inspector or
+                // compact dock; the top status is in bounds[0].
+                if let Some(rect) = rect { assert!(rect.is_finite()); }
                 assert_eq!(state.draft, expected);
                 assert!(state.actions.is_empty());
             }
