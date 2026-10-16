@@ -1695,7 +1695,8 @@ mod tests {
             state.draft.depth = 8.0;
             state.draft.resolution = 0.5;
         }
-        queue(&mut app, WorkshopAction::Generate);
+        let config = app.world().resource::<TerrainWorkshopState>().draft.clone();
+        queue(&mut app, WorkshopAction::Generate(config));
         step(&mut app, 4);
         assert_eq!(
             app.world()
