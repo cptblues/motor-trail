@@ -283,11 +283,37 @@ pub(super) fn interact(
             let fine = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
             let alt = keys.pressed(KeyCode::AltLeft) || keys.pressed(KeyCode::AltRight);
             if let Some(drag) = &gesture.drag {
-                if let Some(candidate) =
-                    update_candidate(drag, ray, state, &active.scene.obstacles, fine, alt) {
+                // Members of the same selection must never magnetize to
+                // each other: snap only against external obstacles.
+                let neighbors: Vec<_> = active.scene.obstacles.iter()
+                    .filter(|o| !drag.members.iter().any(|m| m.id == o.id))
+                    .cloned().collect();
+                if let Some(mut candidate) =
+                    update_candidate(drag, ray, state, &neighbors, fine, alt) {
                     if drag.members.is_empty() {
                         gesture.candidate = Some(candidate);
                     } else {
+                        if drag.mode == GizmoMode::Scale {
+                            let size = Vec3::from_array(drag.start.size);
+                            let mut factors = Vec3::from_array(candidate.size) / size;
+                            let min = Vec3::new(
+                                drag.members.iter().map(|o| 0.1 / o.size[0]).fold(0.0_f32, f32::max),
+                                drag.members.iter().map(|o| 0.1 / o.size[1]).fold(0.0_f32, f32::max),
+                                drag.members.iter().map(|o| 0.1 / o.size[2]).fold(0.0_f32, f32::max),
+                            );
+                            let max = Vec3::new(
+                                drag.members.iter().map(|o| 32.0 / o.size[0]).fold(f32::INFINITY, f32::min),
+                                drag.members.iter().map(|o| 32.0 / o.size[1]).fold(f32::INFINITY, f32::min),
+                                drag.members.iter().map(|o| 32.0 / o.size[2]).fold(f32::INFINITY, f32::min),
+                            );
+                            if state.uniform_scale {
+                                let factor = factors.x.clamp(min.max_element(), max.min_element());
+                                factors = Vec3::splat(factor);
+                            } else {
+                                factors = factors.clamp(min, max);
+                            }
+                            candidate.size = (size * factors).to_array();
+                        }
                         let pivot_before = Vec3::from_array(drag.start.position);
                         let pivot_after = Vec3::from_array(candidate.position);
                         let delta_rot = candidate.transform().rotation
