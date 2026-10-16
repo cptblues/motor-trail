@@ -2371,6 +2371,7 @@ mod tests {
                 let ctx = egui::Context::default();
                 let mut state = TerrainWorkshopState::default();
                 state.open = true;
+                state.mode = WorkshopMode::Edit;
                 state.draft.seed = u64::MAX - 9;
                 let expected = state.draft.clone();
                 let spawn = VehicleSpawn {
