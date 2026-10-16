@@ -1046,12 +1046,16 @@ fn draw_editor(
             gizmos.cross(point + Vec3::Y * 0.08, 0.3, Color::WHITE);
         }
     }
-    if let Some(object) = manipulation.candidate.as_ref().or_else(|| active
-        .scene
-        .obstacles
-        .iter()
-        .find(|item| Some(item.id) == state.selected))
-    {
+    let selection = state.selection();
+    let preview = if manipulation.candidates.is_empty() {
+        manipulation.candidate.iter().collect::<Vec<_>>()
+    } else {
+        manipulation.candidates.iter().collect::<Vec<_>>()
+    };
+    for original in active.scene.obstacles.iter()
+        .filter(|o| selection.contains(&o.id)) {
+        let object = preview.iter().find(|o| o.id == original.id)
+            .copied().unwrap_or(original);
         gizmos.cube(
             object.transform()
                 .with_scale(Vec3::from_array(object.size) + Vec3::splat(0.06)),
