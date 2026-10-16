@@ -17,6 +17,7 @@ use crate::vehicle::config::VehiclePhysicsConfig;
 use crate::vehicle::equipment_runtime::EquipmentRuntime;
 use crate::vehicle::telemetry::VehicleTelemetry;
 use crate::vehicle::{Truck, VehiclePhysics, VehicleVisualState};
+mod nature_smoke;
 mod placement_preview;
 mod smoke;
 use placement_preview::PlacementPreview;
@@ -64,7 +65,7 @@ pub struct TerrainWorkshopState {
     pub tool: EditorTool,
     pub object_kind: ObstacleKind,
     pub object_size: [f32; 3],
-    placement_yaw_degrees: [f32; 5],
+    placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
     pub scene_name: String,
     pub file_selection: String,
@@ -85,7 +86,7 @@ impl Default for TerrainWorkshopState {
             tool: EditorTool::Sculpt,
             object_kind: ObstacleKind::Rock,
             object_size: [2.0, 1.0, 2.0],
-            placement_yaw_degrees: [0.0; 5],
+            placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
             scene_name: "Mon terrain".into(),
             file_selection: String::new(),
@@ -135,6 +136,10 @@ pub struct TerrainRoot;
 pub struct TerrainGround;
 #[derive(Component)]
 pub struct ObstacleEntity(pub u64);
+
+/// Editor-only query shape, deliberately not a Rapier collider component.
+#[derive(Component)]
+struct DecorativePickBounds(Collider);
 
 #[derive(Resource, Default)]
 pub struct TerrainSync {
@@ -217,7 +222,7 @@ impl Plugin for TerrainPlugin {
                     .before(PhysicsSet::SyncBackend),
             )
             .add_systems(FixedUpdate, acknowledge_sync.after(PhysicsSet::Writeback))
-            .add_plugins(smoke::TerrainSmokePlugin);
+            .add_plugins((smoke::TerrainSmokePlugin, nature_smoke::NatureSmokePlugin));
     }
 }
 
@@ -291,7 +296,7 @@ fn validate_candidate(scene: &TerrainScene) -> Result<(), String> {
     scene.validate()?;
     super::mesh::build(&scene.terrain)?;
     for obstacle in &scene.obstacles {
-        obstacle.build()?;
+        obstacle.build_rendered()?;
     }
     Ok(())
 }
@@ -517,7 +522,7 @@ fn commit_objects(
     candidate.obstacles = objects;
     candidate.validate()?;
     for object in &candidate.obstacles {
-        object.build()?;
+        object.build_rendered()?;
     }
     if candidate.obstacles != active.scene.obstacles {
         active.history.push(EditOperation::Objects {
@@ -542,6 +547,7 @@ fn editor_interaction(
     context: ReadRapierContext,
     ground: Query<(), With<TerrainGround>>,
     objects: Query<&ObstacleEntity>,
+    decorative: Query<(Entity, &Transform, &DecorativePickBounds)>,
     mut state: ResMut<TerrainWorkshopState>,
     mut active: ResMut<ActiveTerrain>,
     mut sync: ResMut<TerrainSync>,
@@ -628,13 +634,27 @@ fn editor_interaction(
             }
             EditorTool::Select => {
                 let objects_only = |entity| objects.get(entity).is_ok();
-                let obstacle_hit = rapier.cast_ray(
+                let mut obstacle_hit = rapier.cast_ray(
                     ray.origin,
                     *ray.direction,
                     2000.0,
                     true,
                     QueryFilter::default().predicate(&objects_only),
                 );
+                for (entity, transform, bounds) in &decorative {
+                    if let Some(distance) = bounds.0.cast_ray(
+                        transform.translation,
+                        transform.rotation,
+                        ray.origin,
+                        *ray.direction,
+                        2000.0,
+                        true,
+                    ) {
+                        if obstacle_hit.is_none_or(|(_, previous)| distance < previous) {
+                            obstacle_hit = Some((entity, distance));
+                        }
+                    }
+                }
                 state.selected = unoccluded_hit(obstacle_hit, hit)
                     .and_then(|entity| objects.get(entity).ok().map(|object| object.0));
             }
@@ -876,6 +896,10 @@ fn spawn_with_bounds(
         }
     }
     for object in &scene.obstacles {
+        if matches!(object.kind, ObstacleKind::Nature(asset) if asset.collider(Vec3::ONE).is_ok_and(|shape| shape.is_none()))
+        {
+            continue;
+        }
         let center = Vec3::from_array(object.position);
         let extent = Vec3::from_array(object.size).length() * 0.5;
         let radius = Vec2::new(
@@ -1028,9 +1052,19 @@ fn synchronize_terrain(world: &mut World) {
                     .obstacles
                     .iter()
                     .map(|object| {
-                        object
-                            .build()
-                            .map(|(mesh, collider)| (object.id, object.transform(), mesh, collider))
+                        object.build_rendered().map(|(mesh, collider)| {
+                            let pick_bounds = collider.is_none()
+                                || matches!(object.kind, ObstacleKind::Nature(asset)
+                                    if super::nature::NatureAsset::TREES.contains(&asset));
+                            (
+                                object.id,
+                                object.transform(),
+                                mesh,
+                                collider,
+                                object.size,
+                                pick_bounds,
+                            )
+                        })
                     })
                     .collect::<Result<Vec<_>, _>>()
             } else {
@@ -1106,27 +1140,41 @@ fn synchronize_terrain(world: &mut World) {
                         .get_or_insert_with(|| {
                             world
                                 .resource_mut::<Assets<StandardMaterial>>()
-                                .add(Color::srgb(0.48, 0.49, 0.47))
+                                .add(StandardMaterial {
+                                    base_color: Color::WHITE,
+                                    perceptual_roughness: 1.0,
+                                    double_sided: true,
+                                    cull_mode: None,
+                                    ..default()
+                                })
                         })
                         .clone();
-                    for (id, transform, mesh, collider) in objects {
+                    for (id, transform, mesh, collider, size, pick_bounds) in objects {
                         let mesh = world.resource_mut::<Assets<Mesh>>().add(mesh);
-                        sync.objects.push(
-                            world
-                                .spawn((
-                                    ChildOf(root),
-                                    ObstacleEntity(id),
-                                    Mesh3d(mesh),
-                                    MeshMaterial3d(material.clone()),
-                                    transform,
-                                    // Scene roots are identity; Rapier needs the world pose on first sync.
-                                    GlobalTransform::from(transform),
-                                    collider,
-                                    RigidBody::Fixed,
-                                    Friction::coefficient(1.15),
-                                ))
-                                .id(),
-                        );
+                        let mut object = world.spawn((
+                            ChildOf(root),
+                            ObstacleEntity(id),
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material.clone()),
+                            transform,
+                            // Scene roots are identity; Rapier needs the world pose on first sync.
+                            GlobalTransform::from(transform),
+                        ));
+                        if let Some(collider) = collider {
+                            object.insert((
+                                collider,
+                                RigidBody::Fixed,
+                                Friction::coefficient(1.15),
+                            ));
+                        }
+                        if pick_bounds {
+                            object.insert(DecorativePickBounds(Collider::cuboid(
+                                size[0] * 0.5,
+                                size[1] * 0.5,
+                                size[2] * 0.5,
+                            )));
+                        }
+                        sync.objects.push(object.id());
                     }
                 }
                 if sync.full_reload
@@ -1139,6 +1187,7 @@ fn synchronize_terrain(world: &mut World) {
                         == TerrainPreset::Legacy
                 {
                     let road_mesh = road.take().unwrap_or_else(super::legacy::road);
+                    let data = world.resource::<ActiveTerrain>().scene.terrain.clone();
                     world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
                         world.resource_scope(
                             |world, mut materials: Mut<Assets<StandardMaterial>>| {
@@ -1149,6 +1198,7 @@ fn synchronize_terrain(world: &mut World) {
                                     &mut materials,
                                     root,
                                     road_mesh,
+                                    &data,
                                 );
                             },
                         );
@@ -1163,6 +1213,30 @@ fn synchronize_terrain(world: &mut World) {
                     if let Some(handle) = handle {
                         let _ = world.resource_mut::<Assets<Mesh>>().insert(handle, road);
                     }
+                }
+                if sync.dirty {
+                    let anchors: Vec<_> = world
+                        .query::<(Entity, &super::legacy::NatureDecorAnchor)>()
+                        .iter(world)
+                        .map(|(entity, anchor)| (entity, anchor.x, anchor.z, anchor.offset_y))
+                        .collect();
+                    let data = &world.resource::<ActiveTerrain>().scene.terrain;
+                    let positions: Vec<_> = anchors
+                        .into_iter()
+                        .filter_map(|(entity, x, z, offset)| {
+                            data.height(x, z).map(|height| (entity, height + offset))
+                        })
+                        .collect();
+                    for (entity, y) in positions {
+                        if let Some(mut pose) = world.get::<Transform>(entity).copied() {
+                            pose.translation.y = y;
+                            world
+                                .entity_mut(entity)
+                                .insert((pose, TransformTreeChanged));
+                        }
+                    }
+                    // Fixed-step Rapier propagation does not mark ancestor trees dirty.
+                    world.entity_mut(root).insert(TransformTreeChanged);
                 }
                 sync.pending_revision = Some(world.resource::<ActiveTerrain>().revision);
                 sync.dirty = false;
@@ -2046,7 +2120,7 @@ mod tests {
 
     #[test]
     fn placement_preview_matches_catalog_geometry_and_exact_committed_pose() {
-        for kind in ObstacleKind::ALL {
+        for kind in ObstacleKind::catalogue() {
             let mut app = placement_app();
             app.world_mut()
                 .resource_mut::<TerrainWorkshopState>()
@@ -2075,7 +2149,7 @@ mod tests {
             assert_eq!(pose.scale, Vec3::ONE);
             let handle = &app.world().get::<Mesh3d>(entity).unwrap().0;
             let mesh = app.world().resource::<Assets<Mesh>>().get(handle).unwrap();
-            let (final_mesh, _) = expected.build().unwrap();
+            let (final_mesh, _) = expected.build_rendered().unwrap();
             assert_eq!(
                 mesh.attribute(Mesh::ATTRIBUTE_POSITION)
                     .unwrap()
@@ -2107,6 +2181,244 @@ mod tests {
             );
             assert_eq!(active.history.undo_len(), 1);
             assert_eq!(preview_pose(&mut app), pose, "repeated placement lost yaw");
+        }
+    }
+
+    #[test]
+    fn nature_models_roundtrip_publish_and_undo_without_plant_colliders() {
+        use super::super::nature::NatureAsset;
+        let mut app = app();
+        step(&mut app, 4);
+        let objects: Vec<_> = NatureAsset::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(i, asset)| {
+                let size = asset.default_size();
+                Obstacle {
+                    id: i as u64 + 1,
+                    kind: ObstacleKind::Nature(asset),
+                    position: [
+                        -20.0 + (i % 5) as f32 * 10.0,
+                        size.y * 0.5,
+                        -10.0 + (i / 5) as f32 * 10.0,
+                    ],
+                    rotation_degrees: [0.0, 15.0 * i as f32, 0.0],
+                    size: size.to_array(),
+                }
+            })
+            .collect();
+        let mut active = app.world_mut().remove_resource::<ActiveTerrain>().unwrap();
+        commit_objects(
+            objects.clone(),
+            &mut active,
+            &mut app.world_mut().resource_mut::<TerrainSync>(),
+        )
+        .unwrap();
+        let decoded: TerrainScene =
+            serde_json::from_slice(&serde_json::to_vec(&active.scene).unwrap()).unwrap();
+        decoded.validate().unwrap();
+        assert_eq!(decoded.obstacles, objects);
+        app.insert_resource(active);
+        step(&mut app, 4);
+        let published: Vec<_> = app
+            .world_mut()
+            .query::<(Entity, &ObstacleEntity)>()
+            .iter(app.world())
+            .map(|(entity, id)| (entity, id.0))
+            .collect();
+        assert_eq!(published.len(), 23);
+        for (entity, id) in published {
+            let ObstacleKind::Nature(asset) = objects[id as usize - 1].kind else {
+                unreachable!()
+            };
+            let physical = asset.collider(Vec3::ONE).unwrap().is_some();
+            assert_eq!(
+                app.world().get::<Collider>(entity).is_some(),
+                physical,
+                "{}",
+                asset.id()
+            );
+            assert_eq!(app.world().get::<RigidBody>(entity).is_some(), physical);
+            assert_eq!(
+                app.world().get::<DecorativePickBounds>(entity).is_some(),
+                !physical || NatureAsset::TREES.contains(&asset)
+            );
+        }
+        let meshes = app.world().resource::<Assets<Mesh>>().len();
+        let materials = app.world().resource::<Assets<StandardMaterial>>().len();
+        for _ in 0..3 {
+            queue(&mut app, WorkshopAction::Undo);
+            step(&mut app, 3);
+            assert!(
+                app.world()
+                    .resource::<ActiveTerrain>()
+                    .scene
+                    .obstacles
+                    .is_empty()
+            );
+            queue(&mut app, WorkshopAction::Redo);
+            step(&mut app, 3);
+            assert_eq!(
+                app.world().resource::<ActiveTerrain>().scene.obstacles,
+                objects
+            );
+            assert_eq!(app.world().resource::<Assets<Mesh>>().len(), meshes);
+            assert_eq!(
+                app.world().resource::<Assets<StandardMaterial>>().len(),
+                materials
+            );
+        }
+    }
+
+    #[test]
+    fn nature_decorative_plant_can_be_selected_without_a_physics_collider() {
+        use super::super::nature::NatureAsset;
+        let mut app = placement_app();
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.object_kind = ObstacleKind::Nature(NatureAsset::GrassTall);
+            state.object_size = NatureAsset::GrassTall.default_size().to_array();
+        }
+        placement_tick(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        step(&mut app, 3);
+        let entity = app
+            .world_mut()
+            .query_filtered::<Entity, With<ObstacleEntity>>()
+            .single(app.world())
+            .unwrap();
+        assert!(app.world().get::<Collider>(entity).is_none());
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.tool = EditorTool::Select;
+            state.selected = None;
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        assert_eq!(
+            app.world().resource::<TerrainWorkshopState>().selected,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn nature_tree_can_be_selected_through_its_noncolliding_foliage() {
+        use super::super::nature::NatureAsset;
+        let mut app = placement_app();
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.object_kind = ObstacleKind::Nature(NatureAsset::TreePineSmall);
+            state.object_size = NatureAsset::TreePineSmall.default_size().to_array();
+        }
+        placement_tick(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        step(&mut app, 3);
+        let x = NatureAsset::TreePineSmall.default_size().x * 0.4;
+        move_placement_camera(&mut app, x);
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.tool = EditorTool::Select;
+            state.selected = None;
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        assert_eq!(
+            app.world().resource::<TerrainWorkshopState>().selected,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn nature_decorative_plants_do_not_lift_the_vehicle_spawn() {
+        let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let config = VehiclePhysicsConfig::baseline();
+        let before = spawn_transform(&scene, &config);
+        scene.obstacles.push(Obstacle {
+            id: 1,
+            kind: ObstacleKind::Nature(super::super::nature::NatureAsset::BushWild),
+            position: scene.spawn.position,
+            rotation_degrees: [0.0; 3],
+            size: [3.0; 3],
+        });
+        assert_eq!(spawn_transform(&scene, &config), before);
+    }
+
+    #[test]
+    fn nature_valley_decoration_stays_grounded_after_sculpt_and_reloads() {
+        let mut app = app();
+        queue(
+            &mut app,
+            WorkshopAction::LoadReference(ReferenceScene::Historical),
+        );
+        step(&mut app, 5);
+        {
+            let mut active = app.world_mut().resource_mut::<ActiveTerrain>();
+            active
+                .scene
+                .terrain
+                .heights
+                .iter_mut()
+                .for_each(|height| *height += 3.0);
+            active.revision += 1;
+        }
+        app.world_mut().resource_mut::<TerrainSync>().dirty = true;
+        step(&mut app, 4);
+        let data = &app.world().resource::<ActiveTerrain>().scene.terrain;
+        let expected: Vec<_> = app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| {
+                let anchor = entity.get::<super::super::legacy::NatureDecorAnchor>()?;
+                let pose = entity.get::<Transform>()?;
+                Some((
+                    pose.translation.y,
+                    data.height(anchor.x, anchor.z).unwrap() + anchor.offset_y,
+                ))
+            })
+            .collect();
+        assert!(expected.len() > 180);
+        assert!(
+            expected
+                .iter()
+                .all(|(actual, target)| (actual - target).abs() < 1e-4)
+        );
+        queue(
+            &mut app,
+            WorkshopAction::LoadReference(ReferenceScene::Flat),
+        );
+        step(&mut app, 4);
+        let baseline = (
+            app.world().resource::<Assets<Mesh>>().len(),
+            app.world().resource::<Assets<StandardMaterial>>().len(),
+        );
+        for _ in 0..3 {
+            queue(
+                &mut app,
+                WorkshopAction::LoadReference(ReferenceScene::Historical),
+            );
+            step(&mut app, 4);
+            queue(
+                &mut app,
+                WorkshopAction::LoadReference(ReferenceScene::Flat),
+            );
+            step(&mut app, 4);
+            assert_eq!(
+                (
+                    app.world().resource::<Assets<Mesh>>().len(),
+                    app.world().resource::<Assets<StandardMaterial>>().len()
+                ),
+                baseline
+            );
         }
     }
 

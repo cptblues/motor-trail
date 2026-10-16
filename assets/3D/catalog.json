@@ -1,0 +1,441 @@
+{
+  "pack": "Motor-Trail Nature Prototype",
+  "version": "0.1",
+  "seed": 26016,
+  "colors": {
+    "leaf_dark": "#276B3C",
+    "leaf_mid": "#3C9652",
+    "leaf_light": "#65A665",
+    "leaf_sage": "#8DA65D",
+    "leaf_deep": "#245D37",
+    "pine_dark": "#305F48",
+    "pine_mid": "#438260",
+    "pine_light": "#59966A",
+    "bark": "#87613F",
+    "bark_light": "#9E764B",
+    "bark_dark": "#63462F",
+    "rock_mid": "#829297",
+    "rock_light": "#BAC0B5",
+    "rock_dark": "#64777D",
+    "rock_warm": "#9A9687",
+    "grass": "#579C4E",
+    "grass_light": "#80B65E",
+    "grass_dark": "#347A45",
+    "fern": "#3D9856",
+    "fern_light": "#71B568",
+    "flower": "#D9A760",
+    "flower_pink": "#D78C99",
+    "center": "#DAAA4C",
+    "dead_bark": "#8B755D"
+  },
+  "assets": [
+    {
+      "name": "tree_oak_round",
+      "category": "trees",
+      "description": "Arbre feuillu à houppier facetté",
+      "file": "assets/tree_oak_round.glb",
+      "triangles": 508,
+      "materials": [
+        "bark",
+        "bark_dark",
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid",
+        "leaf_sage"
+      ],
+      "size_m": [
+        4.56,
+        3.53,
+        5.71
+      ]
+    },
+    {
+      "name": "tree_oak_wide",
+      "category": "trees",
+      "description": "Arbre feuillu à houppier facetté",
+      "file": "assets/tree_oak_wide.glb",
+      "triangles": 708,
+      "materials": [
+        "bark",
+        "bark_dark",
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid",
+        "leaf_sage"
+      ],
+      "size_m": [
+        6.03,
+        3.9,
+        5.38
+      ]
+    },
+    {
+      "name": "tree_oak_tall",
+      "category": "trees",
+      "description": "Arbre feuillu à houppier facetté",
+      "file": "assets/tree_oak_tall.glb",
+      "triangles": 408,
+      "materials": [
+        "bark",
+        "bark_dark",
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid",
+        "leaf_sage"
+      ],
+      "size_m": [
+        3.52,
+        2.53,
+        8.6
+      ]
+    },
+    {
+      "name": "tree_young",
+      "category": "trees",
+      "description": "Arbre feuillu à houppier facetté",
+      "file": "assets/tree_young.glb",
+      "triangles": 508,
+      "materials": [
+        "bark",
+        "bark_dark",
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid",
+        "leaf_sage"
+      ],
+      "size_m": [
+        2.47,
+        1.85,
+        3.38
+      ]
+    },
+    {
+      "name": "tree_pine_small",
+      "category": "trees",
+      "description": "Conifère en étages anguleux",
+      "file": "assets/tree_pine_small.glb",
+      "triangles": 108,
+      "materials": [
+        "bark_dark",
+        "pine_dark",
+        "pine_light",
+        "pine_mid"
+      ],
+      "size_m": [
+        2.38,
+        2.36,
+        4.27
+      ]
+    },
+    {
+      "name": "tree_pine_medium",
+      "category": "trees",
+      "description": "Conifère en étages anguleux",
+      "file": "assets/tree_pine_medium.glb",
+      "triangles": 136,
+      "materials": [
+        "bark_dark",
+        "pine_dark",
+        "pine_light",
+        "pine_mid"
+      ],
+      "size_m": [
+        2.92,
+        2.89,
+        6.34
+      ]
+    },
+    {
+      "name": "tree_pine_tall",
+      "category": "trees",
+      "description": "Conifère en étages anguleux",
+      "file": "assets/tree_pine_tall.glb",
+      "triangles": 136,
+      "materials": [
+        "bark_dark",
+        "pine_dark",
+        "pine_light",
+        "pine_mid"
+      ],
+      "size_m": [
+        3.35,
+        3.33,
+        8.42
+      ]
+    },
+    {
+      "name": "rock_boulder_small",
+      "category": "rocks",
+      "description": "Roche facettée asymétrique, matériau mat",
+      "file": "assets/rock_boulder_small.glb",
+      "triangles": 80,
+      "materials": [
+        "rock_dark",
+        "rock_light",
+        "rock_mid"
+      ],
+      "size_m": [
+        1.27,
+        1.15,
+        0.76
+      ]
+    },
+    {
+      "name": "rock_boulder_medium",
+      "category": "rocks",
+      "description": "Roche facettée asymétrique, matériau mat",
+      "file": "assets/rock_boulder_medium.glb",
+      "triangles": 80,
+      "materials": [
+        "rock_dark",
+        "rock_light",
+        "rock_mid"
+      ],
+      "size_m": [
+        2.17,
+        1.72,
+        1.45
+      ]
+    },
+    {
+      "name": "rock_boulder_large",
+      "category": "rocks",
+      "description": "Roche facettée asymétrique, matériau mat",
+      "file": "assets/rock_boulder_large.glb",
+      "triangles": 80,
+      "materials": [
+        "rock_dark",
+        "rock_light",
+        "rock_mid"
+      ],
+      "size_m": [
+        3.26,
+        2.54,
+        2.12
+      ]
+    },
+    {
+      "name": "rock_slab_flat",
+      "category": "rocks",
+      "description": "Roche facettée asymétrique, matériau mat",
+      "file": "assets/rock_slab_flat.glb",
+      "triangles": 80,
+      "materials": [
+        "rock_dark",
+        "rock_light",
+        "rock_warm"
+      ],
+      "size_m": [
+        2.42,
+        1.92,
+        0.45
+      ]
+    },
+    {
+      "name": "rock_cluster",
+      "category": "rocks",
+      "description": "Roche facettée asymétrique, matériau mat",
+      "file": "assets/rock_cluster.glb",
+      "triangles": 240,
+      "materials": [
+        "rock_dark",
+        "rock_light",
+        "rock_mid",
+        "rock_warm"
+      ],
+      "size_m": [
+        2.36,
+        2.22,
+        1.26
+      ]
+    },
+    {
+      "name": "bush_low",
+      "category": "bushes",
+      "description": "Buisson anguleux multi-volumes",
+      "file": "assets/bush_low.glb",
+      "triangles": 240,
+      "materials": [
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid"
+      ],
+      "size_m": [
+        1.15,
+        0.93,
+        0.74
+      ]
+    },
+    {
+      "name": "bush_round",
+      "category": "bushes",
+      "description": "Buisson anguleux multi-volumes",
+      "file": "assets/bush_round.glb",
+      "triangles": 400,
+      "materials": [
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid",
+        "leaf_sage"
+      ],
+      "size_m": [
+        1.37,
+        1.17,
+        1.28
+      ]
+    },
+    {
+      "name": "bush_wild",
+      "category": "bushes",
+      "description": "Buisson anguleux multi-volumes",
+      "file": "assets/bush_wild.glb",
+      "triangles": 560,
+      "materials": [
+        "leaf_dark",
+        "leaf_light",
+        "leaf_mid",
+        "leaf_sage"
+      ],
+      "size_m": [
+        1.95,
+        1.6,
+        1.31
+      ]
+    },
+    {
+      "name": "grass_short",
+      "category": "plants",
+      "description": "Touffe d’herbe stylisée",
+      "file": "assets/grass_short.glb",
+      "triangles": 12,
+      "materials": [
+        "grass",
+        "grass_dark",
+        "grass_light"
+      ],
+      "size_m": [
+        0.53,
+        0.5,
+        0.45
+      ]
+    },
+    {
+      "name": "grass_tall",
+      "category": "plants",
+      "description": "Touffe d’herbe stylisée",
+      "file": "assets/grass_tall.glb",
+      "triangles": 18,
+      "materials": [
+        "grass",
+        "grass_dark",
+        "grass_light"
+      ],
+      "size_m": [
+        0.89,
+        0.88,
+        0.87
+      ]
+    },
+    {
+      "name": "grass_wild",
+      "category": "plants",
+      "description": "Touffe d’herbe stylisée",
+      "file": "assets/grass_wild.glb",
+      "triangles": 26,
+      "materials": [
+        "grass",
+        "grass_dark",
+        "grass_light"
+      ],
+      "size_m": [
+        0.75,
+        0.65,
+        0.75
+      ]
+    },
+    {
+      "name": "fern_small",
+      "category": "plants",
+      "description": "Fougère polygonale à frondes segmentées",
+      "file": "assets/fern_small.glb",
+      "triangles": 120,
+      "materials": [
+        "fern",
+        "fern_light",
+        "grass_dark"
+      ],
+      "size_m": [
+        0.92,
+        0.88,
+        0.48
+      ]
+    },
+    {
+      "name": "fern_large",
+      "category": "plants",
+      "description": "Fougère polygonale à frondes segmentées",
+      "file": "assets/fern_large.glb",
+      "triangles": 168,
+      "materials": [
+        "fern",
+        "fern_light",
+        "grass_dark"
+      ],
+      "size_m": [
+        1.62,
+        1.61,
+        0.85
+      ]
+    },
+    {
+      "name": "log_fallen_small",
+      "category": "wood",
+      "description": "Bois mort / obstacle décoratif",
+      "file": "assets/log_fallen_small.glb",
+      "triangles": 96,
+      "materials": [
+        "bark",
+        "bark_dark",
+        "bark_light"
+      ],
+      "size_m": [
+        1.77,
+        0.45,
+        0.45
+      ]
+    },
+    {
+      "name": "log_fallen_large",
+      "category": "wood",
+      "description": "Bois mort / obstacle décoratif",
+      "file": "assets/log_fallen_large.glb",
+      "triangles": 96,
+      "materials": [
+        "bark",
+        "bark_dark",
+        "bark_light"
+      ],
+      "size_m": [
+        3.02,
+        0.72,
+        0.73
+      ]
+    },
+    {
+      "name": "stump_old",
+      "category": "wood",
+      "description": "Bois mort / obstacle décoratif",
+      "file": "assets/stump_old.glb",
+      "triangles": 64,
+      "materials": [
+        "bark",
+        "bark_light"
+      ],
+      "size_m": [
+        0.76,
+        0.76,
+        0.72
+      ]
+    }
+  ]
+}

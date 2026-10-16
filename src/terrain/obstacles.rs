@@ -7,6 +7,7 @@ use bevy_rapier3d::prelude::Collider;
 use serde::{Deserialize, Serialize};
 
 use super::data::TerrainData;
+use super::nature::NatureAsset;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ObstacleKind {
@@ -15,9 +16,22 @@ pub enum ObstacleKind {
     Sphere,
     Rock,
     Ramp,
+    Nature(NatureAsset),
 }
 
 impl ObstacleKind {
+    pub const COUNT: usize = 5 + NatureAsset::ALL.len();
+
+    pub fn catalogue() -> impl Iterator<Item = Self> {
+        Self::ALL
+            .into_iter()
+            .chain(NatureAsset::ALL.map(Self::Nature))
+    }
+
+    pub fn has_vertex_colors(self) -> bool {
+        matches!(self, Self::Rock | Self::Nature(_))
+    }
+
     pub const ALL: [Self; 5] = [
         Self::Cube,
         Self::Cylinder,
@@ -33,6 +47,7 @@ impl ObstacleKind {
             Self::Sphere => "Sphere",
             Self::Rock => "Rocher",
             Self::Ramp => "Rampe",
+            Self::Nature(asset) => asset.name(),
         }
     }
 }
@@ -109,7 +124,9 @@ impl Obstacle {
                 mesh.scale_by(dimensions);
                 Ok(mesh)
             }
-            ObstacleKind::Rock | ObstacleKind::Ramp => {
+            ObstacleKind::Rock => NatureAsset::RockBoulderMedium.build_mesh(dimensions),
+            ObstacleKind::Nature(asset) => asset.build_mesh(dimensions),
+            ObstacleKind::Ramp => {
                 let (points, triangles) = polyhedron_geometry(self.kind, dimensions);
                 Ok(polyhedron_mesh(&points, triangles))
             }
@@ -117,8 +134,28 @@ impl Obstacle {
     }
 
     pub fn build(&self) -> Result<(Mesh, Collider), String> {
-        let mesh = self.build_mesh()?;
+        let (mesh, collider) = self.build_rendered()?;
+        Ok((
+            mesh,
+            collider.ok_or("Decorative nature objects have no physical collider")?,
+        ))
+    }
+
+    pub fn build_rendered(&self) -> Result<(Mesh, Option<Collider>), String> {
+        let mut mesh = self.build_mesh()?;
+        if !self.kind.has_vertex_colors() {
+            let color = Color::srgb(0.48, 0.49, 0.47).to_linear().to_f32_array();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![color; mesh.count_vertices()]);
+        }
         let dimensions = Vec3::from_array(self.size);
+        let nature = match self.kind {
+            ObstacleKind::Rock => Some(NatureAsset::RockBoulderMedium),
+            ObstacleKind::Nature(asset) => Some(asset),
+            _ => None,
+        };
+        if let Some(asset) = nature {
+            return Ok((mesh, asset.collider(dimensions)?));
+        }
         let collider = match self.kind {
             ObstacleKind::Cube => {
                 Collider::cuboid(dimensions.x / 2.0, dimensions.y / 2.0, dimensions.z / 2.0)
@@ -129,13 +166,14 @@ impl Obstacle {
                 Collider::trimesh(points, triangles)
                     .map_err(|e| format!("Cannot build obstacle {} collider: {e}", self.id))?
             }
-            ObstacleKind::Rock | ObstacleKind::Ramp => {
+            ObstacleKind::Ramp => {
                 let (points, _) = polyhedron_geometry(self.kind, dimensions);
                 Collider::convex_hull(&points)
                     .ok_or_else(|| format!("Cannot build obstacle {} convex hull", self.id))?
             }
+            ObstacleKind::Rock | ObstacleKind::Nature(_) => unreachable!(),
         };
-        Ok((mesh, collider))
+        Ok((mesh, Some(collider)))
     }
 
     pub fn align_to_ground(&mut self, terrain: &TerrainData) -> Result<(), String> {
@@ -267,6 +305,23 @@ mod tests {
             rotation_degrees: [0.0; 3],
             size: [2.0, 3.0, 4.0],
         }
+    }
+
+    #[test]
+    fn nature_assets_json_preserves_the_model_identity_and_old_primitive_scenes() {
+        let mut json = serde_json::to_value(obstacle(ObstacleKind::Cube)).unwrap();
+        json["kind"] = serde_json::json!({"Nature": "tree_oak_round"});
+        let decoded: Obstacle = serde_json::from_value(json.clone())
+            .expect("the nature catalogue must be usable by saved terrain scenes");
+        assert_eq!(serde_json::to_value(decoded).unwrap(), json);
+        assert!(
+            serde_json::from_value::<Obstacle>(
+                serde_json::to_value(obstacle(ObstacleKind::Rock)).unwrap()
+            )
+            .is_ok()
+        );
+        json["kind"] = serde_json::json!({"Nature": "unknown_tree"});
+        assert!(serde_json::from_value::<Obstacle>(json).is_err());
     }
 
     #[test]
@@ -415,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn aligned_rock_matches_sloping_ground_normal_and_convex_mesh_points() {
+    fn aligned_rock_matches_sloping_ground_normal_and_exact_mesh_points() {
         let mut terrain = super::super::generation::generate(
             &super::super::config::TerrainConfig::preset(super::super::config::TerrainPreset::Flat),
         )
@@ -431,8 +486,8 @@ mod tests {
         assert!((transform.rotation * Vec3::Y - normal).length() < 1e-5);
         let (mesh, collider) = object.build().unwrap();
         let (points, _) = mesh_geometry(&mesh).unwrap();
-        let hull = collider.as_convex_polyhedron().unwrap();
-        assert!(points.iter().all(|p| hull.points().any(|h| h == *p)));
+        let surface = collider.as_trimesh().unwrap();
+        assert!(points.iter().all(|p| surface.vertices().any(|h| h == *p)));
         let min_distance = points
             .iter()
             .map(|p| transform.transform_point(*p).dot(normal))

@@ -6,6 +6,7 @@ pub mod generation;
 pub mod history;
 pub mod legacy;
 pub mod mesh;
+pub mod nature;
 pub mod obstacles;
 pub mod persistence;
 pub mod runtime;

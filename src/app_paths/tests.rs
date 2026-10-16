@@ -50,6 +50,20 @@ impl TestDir {
             root.join("assets/vehicles/motor_trail_4x4.glb"),
         )
         .unwrap();
+        fs::create_dir_all(root.join("assets/3D/assets")).unwrap();
+        for asset in crate::terrain::nature::NatureAsset::ALL {
+            let path = asset.asset_path();
+            fs::copy(
+                source.join("assets").join(&path),
+                root.join("assets").join(&path),
+            )
+            .unwrap();
+        }
+        fs::copy(
+            source.join("assets/3D/catalog.json"),
+            root.join("assets/3D/catalog.json"),
+        )
+        .unwrap();
         let target = match (std::env::consts::ARCH, std::env::consts::OS) {
             ("x86_64", "windows") => "x86_64-pc-windows-msvc",
             ("aarch64", "macos") => "aarch64-apple-darwin",
@@ -61,6 +75,23 @@ impl TestDir {
         })).unwrap()).unwrap();
         let layout = ResourceLayout::resolve(&root.join("motor-trail.exe"), None, true).unwrap();
         (root, layout)
+    }
+}
+
+#[test]
+fn nature_pack_resources_must_match_the_compiled_geometry() {
+    for name in [
+        "3D/assets/tree_oak_round.glb",
+        "3D/assets/grass_tall.glb",
+        "3D/catalog.json",
+    ] {
+        let directory = TestDir::new();
+        let (root, paths) = directory.complete_installation();
+        fs::write(root.join("assets").join(name), b"corrupt nature data").unwrap();
+        assert!(
+            paths.check_installation().is_err(),
+            "accepted corrupt {name}"
+        );
     }
 }
 impl Drop for TestDir {

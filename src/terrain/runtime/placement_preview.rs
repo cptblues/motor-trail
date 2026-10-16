@@ -13,6 +13,7 @@ pub(super) fn kind_index(kind: ObstacleKind) -> usize {
         ObstacleKind::Sphere => 2,
         ObstacleKind::Rock => 3,
         ObstacleKind::Ramp => 4,
+        ObstacleKind::Nature(asset) => 5 + asset.index(),
     }
 }
 
@@ -163,11 +164,12 @@ impl PlacementPreview {
                 rotation_degrees: [0.0; 3],
                 ..candidate.object.clone()
             };
-            let Ok(mesh) = prototype.build_mesh() else {
+            let Ok(mut mesh) = prototype.build_mesh() else {
                 self.invalidate();
                 self.clear_assets(world);
                 return;
             };
+            mesh.remove_attribute(Mesh::ATTRIBUTE_COLOR);
             let mut meshes = world.resource_mut::<Assets<Mesh>>();
             if let Some(handle) = &self.mesh {
                 let _ = meshes.insert(handle.id(), mesh);

@@ -1,0 +1,32 @@
+MOTOR-TRAIL — MASTER TEXT-TO-3D PROMPT (V1)
+
+Create a [ASSET DESCRIPTION] for a cohesive stylized low-poly 3D nature environment collection designed for a relaxing off-road vehicle exploration game.
+
+ART DIRECTION
+Charming colorful handcrafted low-poly. Strong recognizable silhouette. Clearly visible polygonal facets. Flat shaded, crisp geometric edges, simplified organic forms, slightly asymmetric shapes. Warm, welcoming, beautifully stylized natural environment. Similar geometry language for trees, plants and rocks.
+
+MATERIALS
+Simple solid-color matte PBR materials. Forest green #276B3C, natural green #3C9652, sage #8DA65D, brown bark #87613F, cool stone #829297 with lighter stone #BAC0B5 and dark stone #64777D. Few distinct material regions, shared palette. High roughness, zero metallic. No textures or gradients. No baked shadows or lighting.
+
+GEOMETRY
+Low-poly game-ready topology and clean geometry, intentional angular facets and readable volume, no detailed sculpting. Distinct silhouette from every angle. Consistent real-world proportions for a third-person off-road vehicle exploration game. Natural imperfections, not symmetry or mechanical repetition.
+
+DELIVERY
+Single isolated mesh asset. No terrain, background, pedestal, base, camera, lighting rig or decoration outside the named asset. Bottom-center pivot, metric scale, PBR materials, GLB/glTF export preferred. Optimized geometry with faceted normals.
+
+NEGATIVE PROMPT
+Photorealistic, detailed realistic texture, bark texture, photo scanned object, smooth subdivided organic sculpt, voxel, Minecraft, outlines, toon shader, excessive tiny leaves, high polygon count, procedural noise texture, gradient, transparent leaves, complex UV textures, dramatic light, shadows, glowing, metal, plastic, highly saturated neon.
+
+------------
+
+CUSTOM EXAMPLE A — DECIDUOUS TREE
+A mature broadleaf forest tree approximately 6 meters tall, irregular tapered brown trunk and 4–6 clustered asymmetrical faceted green foliage masses forming a broad airy canopy. Use mid green, sage and dark green leaf volumes. Simplify leaves into angular canopy masses, not individual leaf shapes. Grounded trunk base.
+
+CUSTOM EXAMPLE B — ROCK
+An irregular naturally weathered boulder approximately 1.5 meters tall and 2 meters wide, strongly faceted angular silhouette, a slightly flat stable underside, cool blue-gray stone with restrained lighter facets and simple matte shading. Suitable as a visible off-road terrain obstacle. Not a crystal or sharp spike.
+
+CUSTOM EXAMPLE C — FERN
+A dense stylized woodland fern approximately 0.75 meters high, 5–7 radial angular fronds with simple triangular leaf segments, alternating forest green and sage green, no photorealistic fine leaves, short stem and natural irregularity. Suitable for mass placement as ground vegetation.
+
+CUSTOM EXAMPLE D — PINE TREE
+An evergreen conifer approximately 7 meters tall. Exposed narrow brown trunk and four overlapping angular seven-sided triangular foliage tiers, broad toward base and tapered toward top. Three muted forest-green shades. Simple low-poly silhouette, no individual needles.

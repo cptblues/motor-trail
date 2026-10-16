@@ -134,7 +134,7 @@ struct Controls {
     tool: EditorTool,
     object_kind: ObstacleKind,
     object_size: [f32; 3],
-    placement_yaws: [(ObstacleKind, f32); 5],
+    placement_yaws: Vec<(ObstacleKind, f32)>,
     selected: Option<u64>,
     scene_name: String,
     file_selection: String,
@@ -142,6 +142,16 @@ struct Controls {
 }
 
 impl Controls {
+    fn choose_kind(&mut self, kind: ObstacleKind) {
+        if self.object_kind != kind {
+            if let ObstacleKind::Nature(asset) = kind {
+                self.object_size = asset.default_size().to_array();
+            }
+        }
+        self.object_kind = kind;
+        self.tool = EditorTool::Place;
+    }
+
     fn read(state: &TerrainWorkshopState) -> Self {
         Self {
             open: state.open,
@@ -151,7 +161,9 @@ impl Controls {
             tool: state.tool,
             object_kind: state.object_kind,
             object_size: state.object_size,
-            placement_yaws: ObstacleKind::ALL.map(|kind| (kind, state.placement_yaw_degrees(kind))),
+            placement_yaws: ObstacleKind::catalogue()
+                .map(|kind| (kind, state.placement_yaw_degrees(kind)))
+                .collect(),
             selected: state.selected,
             scene_name: state.scene_name.clone(),
             file_selection: state.file_selection.clone(),
@@ -789,10 +801,35 @@ fn objects(
                 .selectable_value(&mut controls.object_kind, kind, kind.name())
                 .clicked()
             {
-                controls.tool = EditorTool::Place;
+                controls.choose_kind(kind);
             }
         }
     });
+    egui::ComboBox::from_id_salt("nature_catalogue")
+        .selected_text(match controls.object_kind {
+            ObstacleKind::Nature(asset) => asset.name(),
+            _ => "Modeles Nature",
+        })
+        .width(ui.available_width().min(260.0))
+        .show_ui(ui, |ui| {
+            let mut previous = "";
+            for asset in crate::terrain::nature::NatureAsset::ALL {
+                if asset.category() != previous {
+                    if !previous.is_empty() {
+                        ui.separator();
+                    }
+                    ui.strong(asset.category());
+                    previous = asset.category();
+                }
+                let kind = ObstacleKind::Nature(asset);
+                if ui
+                    .selectable_label(controls.object_kind == kind, asset.name())
+                    .clicked()
+                {
+                    controls.choose_kind(kind);
+                }
+            }
+        });
     vector_control(
         ui,
         "Dimensions de placement [m]",
@@ -1113,6 +1150,20 @@ fn diagnostics(ui: &mut egui::Ui, view: &WorkshopView<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nature_catalogue_choices_use_natural_sizes_and_preserve_repeated_custom_sizes() {
+        let mut controls = Controls::read(&TerrainWorkshopState::default());
+        for asset in crate::terrain::nature::NatureAsset::ALL {
+            let kind = ObstacleKind::Nature(asset);
+            controls.choose_kind(kind);
+            assert_eq!(controls.object_size, asset.default_size().to_array());
+            assert_eq!(controls.tool, EditorTool::Place);
+            controls.object_size = [1.5, 2.0, 2.5];
+            controls.choose_kind(kind);
+            assert_eq!(controls.object_size, [1.5, 2.0, 2.5]);
+        }
+    }
 
     fn input(events: Vec<egui::Event>, size: egui::Vec2) -> egui::RawInput {
         egui::RawInput {

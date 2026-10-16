@@ -63,7 +63,9 @@ executables macOS sont conservees dans le ZIP. Faute d'icone existante, le bundl
 utilise l'icone generique du systeme, sans reference vers un fichier absent.
 
 La liste explicite des ressources inclut le vrai GLB, les cinq profils physiques,
-les fixations et les deux exemples Terrain. Elle exclut generateurs, fichiers
+les fixations, les deux exemples Terrain, les 23 GLB Nature et leur catalogue.
+Voir [les assets Nature](nature-assets.md) pour cette integration.
+Elle exclut generateurs, fichiers
 temporaires, selection du dernier profil et JSON personnels non references.
 L'ajout futur de ressources necessite de mettre a jour cette liste et ses tests.
 Le validateur controle notamment architectures PE/Mach-O, GLB, JSON, plist,

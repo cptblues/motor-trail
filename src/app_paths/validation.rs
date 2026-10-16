@@ -112,6 +112,20 @@ pub(super) fn check(layout: &ResourceLayout) -> Result<String, String> {
         256 * 1024 * 1024,
     )?;
     check_model(&model)?;
+    for asset in crate::terrain::nature::NatureAsset::ALL {
+        let path = layout.assets.join(asset.asset_path());
+        if read_bounded(&path, 16 * 1024 * 1024)? != asset.source_bytes() {
+            return Err(format!(
+                "Nature resource {} differs from the compiled catalogue",
+                path.display()
+            ));
+        }
+        asset.build_mesh(bevy::prelude::Vec3::ONE)?;
+    }
+    let catalog = read_bounded(&layout.assets.join("3D/catalog.json"), 1_048_576)?;
+    if catalog != include_bytes!("../../assets/3D/catalog.json") {
+        return Err("Nature catalogue differs from the compiled model catalogue".into());
+    }
     Ok(version)
 }
 
