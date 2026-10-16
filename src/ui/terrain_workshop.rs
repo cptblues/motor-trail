@@ -463,9 +463,9 @@ fn show_workshop(
                                 .strong().color(egui::Color32::from_rgb(244, 208, 125))
                                 .size(15.0));
                             ui.separator();
-                            if ui.add(egui::Button::new(
-                                egui::RichText::new("✎  RETOUR À LA CRÉATION").strong()
-                            ).fill(egui::Color32::from_rgb(37, 104, 79))).clicked() {
+                            if builder_icon_button(ui, BuilderGlyph::Edit,
+                                if wide { "RETOUR À LA CRÉATION" } else { "CRÉER" },
+                                true, if wide { 235.0 } else { 109.0 }).clicked() {
                                 enqueue(&mut action, WorkshopAction::SetMode(WorkshopMode::Edit));
                             }
                             if wide {
@@ -566,14 +566,14 @@ fn show_workshop(
                         ui.vertical_centered(|ui| {
                             ui.small(egui::RichText::new("OUTILS").color(active));
                             ui.separator();
-                            for (tab, label) in [
-                                (WorkshopTab::Generation, "▲ Terrain"),
-                                (WorkshopTab::Sculpture, "✎ Sculpter"),
-                                (WorkshopTab::Objects, "◈ Objets"),
-                                (WorkshopTab::Scenes, "▤ Scènes"),
+                            for (tab, glyph, label) in [
+                                (WorkshopTab::Generation, BuilderGlyph::Terrain, "Terrain"),
+                                (WorkshopTab::Sculpture, BuilderGlyph::Sculpt, "Sculpter"),
+                                (WorkshopTab::Objects, BuilderGlyph::Objects, "Objets"),
+                                (WorkshopTab::Scenes, BuilderGlyph::Scenes, "Scènes"),
                             ] {
-                                if ui.add_sized([92.0, 37.0],
-                                    egui::Button::new(label).selected(draft.tab == tab)
+                                if builder_icon_button(
+                                    ui, glyph, label, draft.tab == tab, 92.0,
                                 ).clicked() {
                                     draft.tab = tab;
                                     if tab == WorkshopTab::Objects {
@@ -730,6 +730,103 @@ fn show_workshop(
     controls.open = open;
     local.commit(ctx, state, &mut controls, &mut draft, action);
     if wide { bounds[2] } else { bounds[3] }
+}
+
+/// Small vector icons painted into egui buttons; no icon font or external
+/// texture dependency, so the same glyphs ship in native builds.
+#[derive(Clone, Copy)]
+enum BuilderGlyph {
+    Terrain, Sculpt, Objects, Scenes, Save, Play, Edit,
+    Copy, Trash, Ground,
+}
+
+fn builder_icon_button(
+    ui: &mut egui::Ui, glyph: BuilderGlyph, label: &str,
+    selected: bool, width: f32,
+) -> egui::Response {
+    let response = ui.add_sized(
+        [width, 36.0],
+        egui::Button::new(format!("    {label}")).selected(selected),
+    );
+    let painter = ui.painter_at(response.rect);
+    let center = egui::pos2(response.rect.left() + 17.0, response.rect.center().y);
+    let color = if selected {
+        egui::Color32::from_rgb(57, 223, 146)
+    } else {
+        egui::Color32::from_rgb(205, 223, 217)
+    };
+    let stroke = egui::Stroke::new(1.7, color);
+    let point = |x: f32, y: f32| center + egui::vec2(x, y);
+    match glyph {
+        BuilderGlyph::Terrain => {
+            painter.line(vec![point(-9.0, 7.0), point(-3.0, -5.0),
+                point(0.0, -1.0), point(4.0, -9.0), point(10.0, 7.0)], stroke);
+            painter.line_segment([point(-9.0, 7.0), point(10.0, 7.0)], stroke);
+        }
+        BuilderGlyph::Sculpt => {
+            painter.line_segment([point(-8.0, 8.0), point(5.0, -7.0)], stroke);
+            painter.line_segment([point(-5.0, 9.0), point(8.0, -5.0)], stroke);
+            painter.circle_stroke(point(7.0, -7.0), 2.5, stroke);
+        }
+        BuilderGlyph::Objects => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(15.0, 14.0)),
+                2.0, stroke, egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-7.0, -6.0), point(0.0, 0.0)], stroke);
+            painter.line_segment([point(7.0, -6.0), point(0.0, 0.0)], stroke);
+            painter.line_segment([point(0.0, 0.0), point(0.0, 7.0)], stroke);
+        }
+        BuilderGlyph::Scenes => {
+            for y in [-6.0, 0.0, 6.0] {
+                painter.circle_filled(point(-7.0, y), 1.8, color);
+                painter.line_segment([point(-3.0, y), point(9.0, y)], stroke);
+            }
+        }
+        BuilderGlyph::Save => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(16.0, 17.0)),
+                2.0, stroke, egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-4.0, -7.0), point(5.0, -7.0)], stroke);
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-5.0, 0.0), point(5.0, 7.0)),
+                1.0, stroke, egui::StrokeKind::Inside,
+            );
+        }
+        BuilderGlyph::Play => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![point(-5.0, -8.0), point(8.0, 0.0), point(-5.0, 8.0)],
+                color, egui::Stroke::NONE,
+            ));
+        }
+        BuilderGlyph::Edit => {
+            painter.line_segment([point(-8.0, 7.0), point(6.0, -7.0)], stroke);
+            painter.line(vec![point(-9.0, 9.0), point(-2.0, 7.0), point(-7.0, 2.0)], stroke);
+        }
+        BuilderGlyph::Copy => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-8.0, -8.0), point(4.0, 4.0)),
+                1.0, stroke, egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-4.0, -4.0), point(8.0, 8.0)),
+                1.0, stroke, egui::StrokeKind::Inside,
+            );
+        }
+        BuilderGlyph::Trash => {
+            painter.line_segment([point(-8.0, -6.0), point(8.0, -6.0)], stroke);
+            painter.line_segment([point(-3.0, -9.0), point(3.0, -9.0)], stroke);
+            painter.line(vec![point(-6.0, -4.0), point(-5.0, 8.0),
+                point(5.0, 8.0), point(6.0, -4.0)], stroke);
+        }
+        BuilderGlyph::Ground => {
+            painter.line_segment([point(-9.0, 7.0), point(9.0, 7.0)], stroke);
+            painter.line_segment([point(0.0, -8.0), point(0.0, 3.0)], stroke);
+            painter.line(vec![point(-4.0, 0.0), point(0.0, 4.0), point(4.0, 0.0)], stroke);
+        }
+    }
+    response
 }
 
 /// The complete shelf contains a placement row, search/categories and a
@@ -1233,13 +1330,15 @@ fn objects(
     if number > 0 {
         ui.strong(format!("{number} objet(s) selectionne(s)"));
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Dupliquer").clicked() {
+            if builder_icon_button(ui, BuilderGlyph::Copy, "Dupliquer", false, 130.0).clicked() {
                 enqueue(action, WorkshopAction::DuplicateSelection);
             }
-            if ui.button("Supprimer").clicked() {
+            if builder_icon_button(ui, BuilderGlyph::Trash, "Supprimer", false, 132.0).clicked() {
                 enqueue(action, WorkshopAction::DeleteSelection);
             }
-            if number == 1 && ui.button("Aligner au sol").clicked() {
+            if number == 1 && builder_icon_button(
+                ui, BuilderGlyph::Ground, "Au sol", false, 118.0,
+            ).clicked() {
                 if let Some(id) = controls.selected {
                     enqueue(action, WorkshopAction::AlignObject(id));
                 }
