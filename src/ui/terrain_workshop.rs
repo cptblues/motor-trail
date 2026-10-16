@@ -1202,8 +1202,8 @@ fn objects(
         ui.small("Maj + clic : ajouter / retirer. Glisser une poignee X/Y/Z pour transformer.");
         if number == 1 {
             if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
-                egui::CollapsingHeader::new("Position, rotation et dimensions exactes")
-                    .default_open(false)
+                egui::CollapsingHeader::new("Transformations · X / Y / Z")
+                    .default_open(!show_gallery)
                     .show(ui, |ui| object_transform(ui, object, baseline, action));
             }
         } else {
