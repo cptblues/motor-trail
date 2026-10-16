@@ -231,11 +231,8 @@ pub fn driving_enabled(
         && sync.is_none_or(|s| s.car_ready)
 }
 
-fn store() -> TerrainStore {
-    TerrainStore::new("configs/terrains")
-}
-fn refresh_files(mut state: ResMut<TerrainWorkshopState>) {
-    match store().list() {
+fn refresh_files(store: Res<TerrainStore>, mut state: ResMut<TerrainWorkshopState>) {
+    match store.list() {
         Ok(files) => state.files = files,
         Err(error) => state.last_error = Some(error),
     }
@@ -335,6 +332,7 @@ fn install_scene(
 }
 
 fn process_actions(
+    store: Res<TerrainStore>,
     mut state: ResMut<TerrainWorkshopState>,
     mut active: ResMut<ActiveTerrain>,
     mut sync: ResMut<TerrainSync>,
@@ -345,7 +343,14 @@ fn process_actions(
     for action in actions {
         finish_stroke(&mut gesture, &mut active);
         let start = Instant::now();
-        let result = apply_action(action, &mut state, &mut active, &mut sync, &mut camera);
+        let result = apply_action(
+            action,
+            &store,
+            &mut state,
+            &mut active,
+            &mut sync,
+            &mut camera,
+        );
         match result {
             Ok(generated) => {
                 if generated {
@@ -360,6 +365,7 @@ fn process_actions(
 
 fn apply_action(
     action: WorkshopAction,
+    store: &TerrainStore,
     state: &mut TerrainWorkshopState,
     active: &mut ActiveTerrain,
     sync: &mut TerrainSync,
@@ -401,7 +407,7 @@ fn apply_action(
             return Ok(true);
         }
         WorkshopAction::Load(name) => {
-            let scene = store().load(&name)?;
+            let scene = store.load(&name)?;
             install_scene(scene, Some(name.clone()), active, state, sync, camera)?;
             state.file_selection = name;
             state.status = "Scene chargee".into();
@@ -410,12 +416,12 @@ fn apply_action(
         WorkshopAction::SaveAs(name) => {
             let mut candidate = active.scene.clone();
             candidate.name = name.clone();
-            store().save(&name, &candidate)?;
+            store.save(&name, &candidate)?;
             active.scene.name = name.clone();
             active.file = Some(name.clone());
             state.scene_name = name.clone();
             state.file_selection = name;
-            state.files = store().list()?;
+            state.files = store.list()?;
             state.status = "Scene sauvegardee".into();
         }
         WorkshopAction::Save => {
@@ -423,11 +429,11 @@ fn apply_action(
                 .file
                 .clone()
                 .ok_or("Choisir un nom avec Sauvegarder sous")?;
-            store().save(&name, &active.scene)?;
+            store.save(&name, &active.scene)?;
             state.status = "Scene sauvegardee".into();
         }
         WorkshopAction::RefreshFiles => {
-            state.files = store().list()?;
+            state.files = store.list()?;
         }
         WorkshopAction::Undo | WorkshopAction::Redo => {
             let changed = if matches!(action, WorkshopAction::Undo) {
@@ -1248,6 +1254,12 @@ mod tests {
         .init_resource::<Assets<Mesh>>()
         .init_resource::<Assets<StandardMaterial>>()
         .init_resource::<crate::GameState>()
+        .insert_resource(TerrainStore::new(
+            std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join("motor-trail-runtime-test-no-writes"),
+        ))
         .init_resource::<TerrainWorkshopState>()
         .init_resource::<TerrainSync>()
         .init_resource::<EditorGesture>()
@@ -1299,6 +1311,43 @@ mod tests {
             .single(app.world())
             .unwrap()
             .translation
+    }
+
+    #[test]
+    fn workshop_saves_and_loads_use_the_injected_user_directory() {
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "motor-trail-user-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = TerrainStore::new(&root);
+        let mut app = app();
+        app.insert_resource(store.clone());
+        step(&mut app, 4);
+        queue(&mut app, WorkshopAction::SaveAs("User Trail".into()));
+        step(&mut app, 2);
+        assert!(
+            app.world()
+                .resource::<TerrainWorkshopState>()
+                .last_error
+                .is_none()
+        );
+        let saved = store.load("User Trail").unwrap();
+        assert_eq!(saved.name, "User Trail");
+        assert_eq!(store.list().unwrap(), vec!["User Trail"]);
+        queue(
+            &mut app,
+            WorkshopAction::LoadReference(ReferenceScene::Steps),
+        );
+        step(&mut app, 2);
+        queue(&mut app, WorkshopAction::Load("User Trail".into()));
+        step(&mut app, 2);
+        assert_eq!(app.world().resource::<ActiveTerrain>().scene, saved);
+        std::fs::remove_file(root.join("User Trail.json")).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     fn extended_equipment_app() -> (App, Entity, Entity) {

@@ -3,6 +3,29 @@
 Prototype Rust d'exploration 4x4 dans une vallee low-poly, avec Bevy 0.19,
 bevy_rapier3d 0.35, le modele articule fourni et un atelier de physique en direct.
 
+## Telecharger Motor-Trail
+
+Les applications seront disponibles dans les [GitHub Releases](https://github.com/cptblues/motor-trail/releases)
+apres publication d'un tag de version :
+
+- Windows x64 : extraire **tout** `Motor-Trail-Windows-x64.zip`, puis ouvrir
+  `Motor-Trail/motor-trail.exe` par double-clic.
+- Mac Apple Silicon (M1 et suivants) : extraire `Motor-Trail-macOS-AppleSilicon.zip`,
+  puis ouvrir `Motor-Trail.app`, eventuellement deplacee dans Applications.
+- Mac Intel : utiliser `Motor-Trail-macOS-Intel.zip` de la meme facon.
+
+Rust et Cargo ne sont pas necessaires pour jouer. Les applications ne sont pas
+signees ni notarisees : Windows ou Gatekeeper sur macOS peuvent afficher un
+avertissement ou bloquer le lancement. Ne pas desactiver les protections du
+systeme ; consulter les indications officielles et verifier la provenance.
+L'icone generique du systeme est utilisee temporairement.
+
+Les sauvegardes sont stockees hors de l'installation :
+`%APPDATA%/MotorTrail/` sous Windows et
+`~/Library/Application Support/MotorTrail/` sous macOS.
+Remplacer l'application ne remplace pas ces donnees. Voir
+[distribution et validation](docs/distribution.md) pour la migration et les essais manuels.
+
 ## Demarrer
 
 Installer un Rust stable a jour, puis lancer :
@@ -44,7 +67,8 @@ ou placer des objets, puis en **Conduite** pour essayer le resultat.
 
 L'atelier propose des terrains seedes (Plat, Vallee, Montagne, Trial), quatre
 brosses, cinq primitives, selection 3D et transformations numeriques, Undo/Redo,
-huit scenes de reference et des sauvegardes JSON exactes dans `configs/terrains/`.
+huit scenes de reference et des sauvegardes JSON exactes dans le sous-dossier
+`terrains/` des donnees utilisateur.
 La vallee historique reste chargeable. Les profils du 4x4 sont conserves.
 
 En edition : clic gauche pour l'outil, clic droit pour l'orbite, clic molette
@@ -94,7 +118,10 @@ ses valeurs sans modifier le fichier sauvegarde.
 
 ## Profils
 
-Les JSON lisibles sont dans `configs/vehicles/`.
+Les JSON modifiables sont dans `vehicles/` des donnees utilisateur. Les
+references livrees se trouvent dans `defaults/vehicles/` des applications, ou
+dans `configs/vehicles/` du depot en developpement. La premiere migration copie
+les anciens profils et terrains sans les supprimer ni ecraser les sauvegardes.
 
 - **Baseline** : reference du controleur Rapier.
 - **Confort**, **Franchissement**, **Dynamique** : variantes experimentales.
@@ -226,6 +253,8 @@ compilation reussie ne constituent pas une validation des sensations de conduite
 
 ```text
 src/
+  app_paths.rs               ressources d'installation et donnees utilisateur
+  app_paths/                 migration initiale et controle sans interface
   main.rs                    modele, camera de conduite et commandes du jeu
   terrain/                   generation, sculpture, scenes, objets et collisions
   vehicle/config.rs          parametres, unites, validation et references
@@ -258,6 +287,7 @@ cargo fmt --all -- --check
 cargo test
 cargo test --release
 cargo build --release
+python -B -m unittest discover -s scripts/tests -v
 git diff --check
 ```
 
@@ -269,3 +299,29 @@ depassement restent actifs ; le profil release du jeu est inchange.
 Pour les essais manuels, comparer les memes passages avec deux profils :
 arret en devers, demarrage en pente, freinage, virage et une roue sur un obstacle.
 Regler d'abord la charge statique et l'amortissement, puis adherence et moteur.
+
+## Creer Une Release
+
+Integrer d'abord les changements dans `main`, verifier la CI et utiliser un tag
+de version encore inexistant, cree sur le commit integre et teste :
+
+```bash
+git checkout main
+git pull
+git tag v0.1.0-alpha.1
+git push origin v0.1.0-alpha.1
+```
+
+Seul un push de tag `v*` declenche `.github/workflows/release.yml`. Un commit sur
+`main`, une PR ou une autre branche ne produit pas d'application distribuable,
+et aucun declenchement manuel n'est prevu. La CI Rust existante reste independante.
+
+Les trois compilations natives doivent reussir, avec des archives valides et
+un controle sans interface de l'installation extraite. La Release publie alors :
+
+- `Motor-Trail-Windows-x64.zip`
+- `Motor-Trail-macOS-AppleSilicon.zip`
+- `Motor-Trail-macOS-Intel.zip`
+
+Les tags contenant `alpha`, `beta` ou `rc` produisent une prerelease. Les details,
+limites de validation et commandes locales sont dans [distribution](docs/distribution.md).

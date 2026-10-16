@@ -2,6 +2,7 @@
 //! Vallee procedurale et vehicule articule charge depuis le modele glTF.
 use std::f32::consts::TAU;
 
+mod app_paths;
 mod persistence;
 mod terrain;
 mod ui;
@@ -74,22 +75,60 @@ struct GameState {
 }
 
 fn main() -> AppExit {
-    let (config, profiles) = ProfileStore::bootstrap("configs/vehicles");
-    App::new()
+    match run() {
+        Ok(exit) => exit,
+        Err(error) => {
+            eprintln!("Motor-Trail: {error}");
+            AppExit::error()
+        }
+    }
+}
+
+fn run() -> Result<AppExit, String> {
+    let resources = app_paths::ResourceLayout::discover()?;
+    let version = resources.check_installation()?;
+    if std::env::args_os().any(|arg| arg == "--check-installation") {
+        println!(
+            "Motor-Trail {version}: installation resources validated (no renderer or user-data writes)"
+        );
+        return Ok(AppExit::Success);
+    }
+    let data = app_paths::command_line_data_root()?;
+    resources.initialize_user_data(&data)?;
+    let data = data
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve user-data directory: {e}"))?;
+    let (config, profiles) = ProfileStore::bootstrap(data.join("vehicles"));
+    println!("Motor-Trail {version}; user data: {}", data.display());
+    Ok(App::new()
         .insert_resource(config)
         .insert_resource(profiles)
+        .insert_resource(terrain::persistence::TerrainStore::new(
+            data.join("terrains"),
+        ))
         .insert_resource(ClearColor(Color::srgb(0.69, 0.82, 0.94)))
         .init_resource::<GameState>()
         .init_resource::<OrbitCamera>()
         .init_resource::<FrameStats>()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Motor Trail | Rando 4x4".into(),
-                resolution: (1280, 780).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(AssetPlugin {
+                    file_path: resources
+                        .assets
+                        .to_str()
+                        .ok_or("Asset directory must be UTF-8")?
+                        .to_owned(),
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Motor Trail | Rando 4x4".into(),
+                        resolution: (1280, 780).into(),
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .add_plugins((VehiclePlugin, EguiPlugin::default(), PhysicsTuningPlugin))
         .add_plugins(vehicle::diagnostics::WheelDiagnosticsPlugin)
         .add_plugins(vehicle::body_probe::VehicleBodyProbePlugin)
@@ -109,7 +148,7 @@ fn main() -> AppExit {
             )
                 .chain(),
         )
-        .run()
+        .run())
 }
 
 fn setup(
