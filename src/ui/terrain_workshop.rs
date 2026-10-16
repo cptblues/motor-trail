@@ -7,7 +7,7 @@ use crate::terrain::brush::{Brush, BrushKind};
 use crate::terrain::config::{TerrainConfig, TerrainPreset};
 use crate::terrain::obstacles::{Obstacle, ObstacleKind};
 use crate::terrain::runtime::{
-    ActiveTerrain, EditorTool, PlacementMode, TerrainWorkshopState, WorkshopAction, WorkshopMode,
+    ActiveTerrain, EditorTool, GizmoMode, PlacementMode, TerrainWorkshopState, WorkshopAction, WorkshopMode,
 };
 use crate::terrain::scene::{ReferenceScene, VehicleSpawn};
 
@@ -138,6 +138,14 @@ struct Controls {
     object_kind: ObstacleKind,
     object_size: [f32; 3],
     placement_mode: PlacementMode,
+    placement_follow_ground: bool,
+    placement_offset_y: f32,
+    gizmo_mode: GizmoMode,
+    snap_enabled: bool,
+    snap_objects: bool,
+    snap_grid: f32,
+    snap_angle: f32,
+    uniform_scale: bool,
     placement_yaws: Vec<(ObstacleKind, f32)>,
     selected: Option<u64>,
     scene_name: String,
@@ -167,6 +175,14 @@ impl Controls {
             object_kind: state.object_kind,
             object_size: state.object_size,
             placement_mode: state.placement_mode,
+            placement_follow_ground: state.placement_follow_ground,
+            placement_offset_y: state.placement_offset_y,
+            gizmo_mode: state.gizmo_mode,
+            snap_enabled: state.snap_enabled,
+            snap_objects: state.snap_objects,
+            snap_grid: state.snap_grid,
+            snap_angle: state.snap_angle,
+            uniform_scale: state.uniform_scale,
             placement_yaws: ObstacleKind::catalogue()
                 .map(|kind| (kind, state.placement_yaw_degrees(kind)))
                 .collect(),
@@ -195,12 +211,14 @@ struct WorkshopUi {
 
 impl WorkshopUi {
     fn sync_selection(&mut self, state: &TerrainWorkshopState, view: &WorkshopView<'_>) {
-        let object = state
-            .selected
-            .and_then(|id| view.obstacles.iter().find(|object| object.id == id));
-        if self.draft.object_baseline.as_ref() != object {
-            self.draft.object = object.cloned();
-            self.draft.object_baseline = object.cloned();
+        let original = state.selected.and_then(|id| 
+            view.obstacles.iter().find(|object| object.id == id));
+        if let Some(candidate) = view.preview_object {
+            self.draft.object = Some(candidate.clone());
+            self.draft.object_baseline = original.cloned();
+        } else if self.draft.object_baseline.as_ref() != original {
+            self.draft.object = original.cloned();
+            self.draft.object_baseline = original.cloned();
         }
         let spawn = SpawnDraft::read(view.spawn);
         if self.draft.spawn_baseline.as_ref() != Some(&spawn) {
@@ -265,6 +283,14 @@ impl WorkshopUi {
         state.object_kind = controls.object_kind;
         state.object_size = controls.object_size;
         state.placement_mode = controls.placement_mode;
+        state.placement_follow_ground = controls.placement_follow_ground;
+        state.placement_offset_y = controls.placement_offset_y.clamp(-32.0, 32.0);
+        state.gizmo_mode = controls.gizmo_mode;
+        state.snap_enabled = controls.snap_enabled;
+        state.snap_objects = controls.snap_objects;
+        state.snap_grid = controls.snap_grid.clamp(0.05, 5.0);
+        state.snap_angle = controls.snap_angle.clamp(1.0, 90.0);
+        state.uniform_scale = controls.uniform_scale;
         state.selected = controls.selected;
         state.scene_name.clone_from(&controls.scene_name);
         state.file_selection.clone_from(&controls.file_selection);
@@ -292,12 +318,14 @@ struct WorkshopView<'a> {
     terrain_bytes: usize,
     cells: (usize, usize),
     ground_height: &'a dyn Fn(f32, f32) -> Option<f32>,
+    preview_object: Option<&'a Obstacle>,
 }
 
 fn terrain_workshop_ui(
     mut contexts: EguiContexts,
     mut state: ResMut<TerrainWorkshopState>,
     active: Res<ActiveTerrain>,
+    manipulation: Res<crate::terrain::runtime::GizmoGesture>,
     mut local: Local<WorkshopUi>,
 ) -> Result {
     if !state.open {
@@ -323,6 +351,7 @@ fn terrain_workshop_ui(
         terrain_bytes: terrain.memory_bytes(),
         cells: (terrain.cells_x, terrain.cells_z),
         ground_height: &ground_height,
+        preview_object: manipulation.candidate.as_ref(),
     };
     show_workshop(contexts.ctx_mut()?, &mut state, &view, &mut local);
     Ok(())
@@ -908,6 +937,43 @@ fn objects(
         ui.selectable_value(&mut controls.placement_mode, PlacementMode::Multiple, "Multiple");
     });
     ui.small("Choisissez un modele puis cliquez sur le terrain. Q/E tourne ; Echap annule.");
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut controls.placement_follow_ground, "Suivre le sol");
+        if !controls.placement_follow_ground {
+            ui.label("Libre : le modele peut traverser le sol");
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Decalage vertical [m]");
+        ui.add(egui::DragValue::new(&mut controls.placement_offset_y)
+            .speed(0.1).range(-32.0..=32.0));
+    });
+    ui.separator();
+    ui.heading("Manipulation 3D de la selection");
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Move, "G · Deplacer");
+        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Rotate, "R · Tourner");
+        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Scale, "S · Taille");
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut controls.snap_enabled, "Aimantation");
+        if controls.snap_enabled {
+            ui.checkbox(&mut controls.snap_objects, "Autres objets");
+        }
+        ui.checkbox(&mut controls.uniform_scale, "Taille uniforme");
+    });
+    if controls.snap_enabled {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Pas grille [m]");
+            ui.add(egui::DragValue::new(&mut controls.snap_grid)
+                .speed(0.05).range(0.05..=5.0));
+            ui.label("Angle [°]");
+            ui.add(egui::DragValue::new(&mut controls.snap_angle)
+                .speed(1.0).range(1.0..=90.0));
+        });
+    }
+    ui.small("Sur une selection : G/R/S, glisser une poignee coloree, Shift = mouvement fin, Alt = aimantation temporairement desactivee, Echap = annuler.");
+    ui.separator();
     vector_control(
         ui,
         "Dimensions de placement [m]",
@@ -1772,6 +1838,7 @@ mod tests {
                     terrain_bytes: 324,
                     cells: (8, 8),
                     ground_height: &|_, _| Some(0.0),
+                    preview_object: None,
                 };
                 let mut local = WorkshopUi::default();
                 local.draft.tab = tab;

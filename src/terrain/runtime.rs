@@ -18,7 +18,11 @@ use crate::vehicle::equipment_runtime::EquipmentRuntime;
 use crate::vehicle::telemetry::VehicleTelemetry;
 use crate::vehicle::{Truck, VehiclePhysics, VehicleVisualState};
 mod nature_smoke;
+mod manipulation;
 mod placement_preview;
+pub use manipulation::GizmoMode;
+pub(crate) use manipulation::GizmoGesture;
+use manipulation::ManipulationPreview;
 mod smoke;
 use placement_preview::PlacementPreview;
 
@@ -83,6 +87,14 @@ pub struct TerrainWorkshopState {
     pub object_kind: ObstacleKind,
     pub object_size: [f32; 3],
     pub placement_mode: PlacementMode,
+    pub placement_follow_ground: bool,
+    pub placement_offset_y: f32,
+    pub gizmo_mode: GizmoMode,
+    pub snap_enabled: bool,
+    pub snap_objects: bool,
+    pub snap_grid: f32,
+    pub snap_angle: f32,
+    pub uniform_scale: bool,
     placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
     pub scene_name: String,
@@ -105,6 +117,14 @@ impl Default for TerrainWorkshopState {
             object_kind: ObstacleKind::Rock,
             object_size: [2.0, 1.0, 2.0],
             placement_mode: PlacementMode::Single,
+            placement_follow_ground: true,
+            placement_offset_y: 0.0,
+            gizmo_mode: GizmoMode::Move,
+            snap_enabled: false,
+            snap_objects: true,
+            snap_grid: 0.5,
+            snap_angle: 15.0,
+            uniform_scale: false,
             placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
             scene_name: "Mon terrain".into(),
@@ -211,6 +231,8 @@ impl Plugin for TerrainPlugin {
             .init_resource::<EditorGesture>()
             .init_resource::<EditorCamera>()
             .init_resource::<PlacementPreview>()
+            .init_resource::<GizmoGesture>()
+            .init_resource::<ManipulationPreview>()
             .init_resource::<ButtonInput<MouseButton>>()
             .add_systems(Startup, refresh_files)
             .add_systems(
@@ -228,7 +250,8 @@ impl Plugin for TerrainPlugin {
             .add_systems(Update, draw_editor.after(editor_camera))
             .add_systems(
                 PostUpdate,
-                placement_preview::render
+                (placement_preview::render, manipulation::render)
+                    .chain()
                     .after(bevy_egui::EguiPostUpdateSet::EndPass)
                     .before(bevy::transform::TransformSystems::Propagate),
             )
@@ -361,10 +384,21 @@ fn process_actions(
     mut active: ResMut<ActiveTerrain>,
     mut sync: ResMut<TerrainSync>,
     mut gesture: ResMut<EditorGesture>,
+    mut gizmo: ResMut<GizmoGesture>,
     mut camera: ResMut<EditorCamera>,
 ) {
     let actions = std::mem::take(&mut state.actions);
     for action in actions {
+        if gizmo.drag.is_some() {
+            gizmo.drag = None;
+            gizmo.candidate = None;
+            // Undo/Redo during an unfinished drag only cancels that drag.
+            // Other explicit actions can continue after the transient preview
+            // has been safely discarded.
+            if matches!(action, WorkshopAction::Undo | WorkshopAction::Redo) {
+                continue;
+            }
+        }
         finish_stroke(&mut gesture, &mut active);
         let start = Instant::now();
         let result = apply_action(
@@ -575,10 +609,24 @@ fn editor_interaction(
     mut sync: ResMut<TerrainSync>,
     mut gesture: ResMut<EditorGesture>,
     mut preview: ResMut<PlacementPreview>,
+    mut manipulation: ResMut<GizmoGesture>,
 ) {
     preview.invalidate();
     gesture.center = None;
     let focused = windows.single().is_ok_and(|window| window.focused);
+    // Resolve camera/pointer even if the cursor leaves the window: an active
+    // gizmo must still see release/cancel rather than getting stuck dragging.
+    let pointer_ray = windows.single().ok()
+        .and_then(|window| window.cursor_position())
+        .and_then(|position| cameras.single().ok()
+            .and_then(|(camera, transform)| camera.viewport_to_world(transform, position).ok()));
+    let camera_eye = cameras.single().map_or(Vec3::ZERO, |(_, pose)| pose.translation());
+    if manipulation::interact(
+        &mut manipulation, &mut state, &mut active, &mut sync,
+        &capture, &mouse, &mut keys, focused, pointer_ray, camera_eye,
+    ) {
+        return;
+    }
     if state.mode == WorkshopMode::Edit && focused && state.tool == EditorTool::Place {
         state.cursor = None;
         let escape = !capture.keyboard && keys.just_pressed(KeyCode::Escape);
@@ -770,6 +818,7 @@ fn apply_stroke(
 
 fn editor_camera(
     state: Res<TerrainWorkshopState>,
+    manipulation: Res<GizmoGesture>,
     capture: Res<UiInputCapture>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -783,7 +832,7 @@ fn editor_camera(
     }
     let focused = windows.single().is_ok_and(|window| window.focused);
     if !capture.pointer && focused {
-        if mouse.pressed(MouseButton::Right) {
+        if mouse.pressed(MouseButton::Right) && !manipulation.block_orbit {
             orbit.yaw -= motion.delta.x * 0.006;
             orbit.pitch = (orbit.pitch + motion.delta.y * 0.006).clamp(0.15, 1.48);
         }
@@ -811,7 +860,13 @@ fn editor_camera(
     }
 }
 
-fn draw_editor(state: Res<TerrainWorkshopState>, active: Res<ActiveTerrain>, mut gizmos: Gizmos) {
+fn draw_editor(
+    state: Res<TerrainWorkshopState>,
+    active: Res<ActiveTerrain>,
+    manipulation: Res<GizmoGesture>,
+    cameras: Query<&GlobalTransform, With<crate::ChaseCamera>>,
+    mut gizmos: Gizmos,
+) {
     if state.mode != WorkshopMode::Edit {
         return;
     }
@@ -832,18 +887,20 @@ fn draw_editor(state: Res<TerrainWorkshopState>, active: Res<ActiveTerrain>, mut
             gizmos.cross(point + Vec3::Y * 0.08, 0.3, Color::WHITE);
         }
     }
-    if let Some(object) = active
+    if let Some(object) = manipulation.candidate.as_ref().or_else(|| active
         .scene
         .obstacles
         .iter()
-        .find(|item| Some(item.id) == state.selected)
+        .find(|item| Some(item.id) == state.selected))
     {
         gizmos.cube(
-            object
-                .transform()
+            object.transform()
                 .with_scale(Vec3::from_array(object.size) + Vec3::splat(0.06)),
             Color::srgb(0.95, 0.75, 0.12),
         );
+    }
+    if let Ok(camera) = cameras.single() {
+        manipulation::draw(&mut gizmos, &state, &active, &manipulation, camera.translation());
     }
     let spawn = Vec3::from_array(active.scene.spawn.position);
     gizmos.arrow(
@@ -1362,6 +1419,8 @@ mod tests {
         .init_resource::<EditorGesture>()
         .init_resource::<EditorCamera>()
         .init_resource::<PlacementPreview>()
+        .init_resource::<GizmoGesture>()
+        .init_resource::<ManipulationPreview>()
         .init_resource::<ButtonInput<MouseButton>>()
         .insert_resource(ActiveTerrain {
             scene,
@@ -1375,7 +1434,9 @@ mod tests {
         .add_systems(Update, process_actions.before(crate::controls))
         .add_systems(
             PostUpdate,
-            placement_preview::render.before(bevy::transform::TransformSystems::Propagate),
+            (placement_preview::render, manipulation::render)
+                .chain()
+                .before(bevy::transform::TransformSystems::Propagate),
         )
         .add_systems(
             FixedUpdate,
@@ -2161,6 +2222,67 @@ mod tests {
             app.world().resource::<ActiveTerrain>().scene.obstacles.len(), 1,
         );
         assert!(preview_entity(&mut app).is_none());
+    }
+
+    #[test]
+    fn free_placement_offset_enters_the_ground_without_changing_the_object_schema() {
+        let mut app = placement_app();
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.placement_follow_ground = false;
+            state.placement_offset_y = -2.5;
+        }
+        placement_tick(&mut app);
+        let pose = preview_pose(&mut app);
+        assert!(pose.translation.y < 0.0, "free placement must allow burial");
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        let placed = &app.world().resource::<ActiveTerrain>().scene.obstacles[0];
+        assert_eq!(placed.transform(), pose);
+        assert_eq!(placed.size, [2.0, 1.4, 3.0]);
+        let json = serde_json::to_string(placed).unwrap();
+        let restored: Obstacle = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, *placed);
+    }
+
+    #[test]
+    fn transient_manipulation_preview_does_not_move_live_rapier_obstacle() {
+        let mut app = placement_app();
+        placement_tick(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        step(&mut app, 4);
+        let original = app.world().resource::<ActiveTerrain>().scene.obstacles[0].clone();
+        let body_entity = app.world_mut()
+            .query_filtered::<Entity, With<ObstacleEntity>>()
+            .single(app.world()).unwrap();
+        let pose = *app.world().get::<Transform>(body_entity).unwrap();
+        assert!(app.world().get::<Collider>(body_entity).is_some());
+        let history_before = app.world().resource::<ActiveTerrain>().history.undo_len();
+
+        let mut candidate = original.clone();
+        candidate.position[0] += 3.0;
+        app.world_mut().resource_mut::<GizmoGesture>().candidate = Some(candidate.clone());
+        step(&mut app, 1);
+        let overlay = app.world_mut().query::<(Entity, &Name)>()
+            .iter(app.world())
+            .find(|(_, name)| name.as_str() == "Manipulation preview")
+            .map(|(id, _)| id).expect("transient overlay must exist");
+        assert!(app.world().get::<Collider>(overlay).is_none());
+        assert!(app.world().get::<RigidBody>(overlay).is_none());
+        assert_eq!(*app.world().get::<Transform>(overlay).unwrap(), candidate.transform());
+        assert_eq!(*app.world().get::<Transform>(body_entity).unwrap(), pose);
+        assert_eq!(*app.world().get::<Visibility>(body_entity).unwrap(), Visibility::Hidden);
+        assert_eq!(app.world().resource::<ActiveTerrain>().scene.obstacles[0], original);
+        assert_eq!(app.world().resource::<ActiveTerrain>().history.undo_len(), history_before);
+
+        app.world_mut().resource_mut::<GizmoGesture>().candidate = None;
+        step(&mut app, 1);
+        assert!(app.world().get_entity(overlay).is_err());
+        assert_eq!(*app.world().get::<Visibility>(body_entity).unwrap(), Visibility::Inherited);
+        assert_eq!(app.world().resource::<ActiveTerrain>().scene.obstacles[0], original);
     }
 
     #[test]
