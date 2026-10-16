@@ -54,6 +54,10 @@ fn in_editor_dock(rect: Option<egui::Rect>, point: egui::Pos2) -> bool {
     rect.is_some_and(|bounds| bounds.contains(point))
 }
 
+fn in_any_editor_dock(rects: &[Option<egui::Rect>; 4], point: egui::Pos2) -> bool {
+    rects.iter().copied().any(|rect| in_editor_dock(rect, point))
+}
+
 fn refresh_input_capture(
     mut contexts: EguiContexts,
     physics: Res<PhysicsTuningState>,
@@ -88,7 +92,7 @@ fn refresh_input_capture(
                         // while the cursor is interacting with a dock widget.
                         let over_dock = terrain.as_ref().is_some_and(|state| state.open)
                             && dock.as_ref().is_some_and(|dock|
-                                in_editor_dock(dock.rect, pointer));
+                                in_any_editor_dock(&dock.rects, pointer));
                         over_dock || ctx.layer_id_at(pointer)
                             .is_some_and(|layer| layer.order != egui::Order::Background)
                     })
@@ -116,6 +120,21 @@ mod tests {
         assert!(in_editor_dock(Some(rect), egui::pos2(1200.0, 750.0)));
         assert!(!in_editor_dock(Some(rect), egui::pos2(400.0, 50.0)));
         assert!(!in_editor_dock(None, egui::pos2(910.0, 50.0)));
+    }
+
+    #[test]
+    fn all_four_builder_surfaces_capture_world_input() {
+        let rects = [
+            Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1400.0, 55.0))),
+            Some(egui::Rect::from_min_size(egui::pos2(0.0, 55.0), egui::vec2(110.0, 845.0))),
+            Some(egui::Rect::from_min_size(egui::pos2(1072.0, 55.0), egui::vec2(328.0, 845.0))),
+            Some(egui::Rect::from_min_size(egui::pos2(110.0, 699.0), egui::vec2(962.0, 201.0))),
+        ];
+        for point in [
+            egui::pos2(500.0, 20.0), egui::pos2(45.0, 450.0),
+            egui::pos2(1300.0, 400.0), egui::pos2(500.0, 810.0),
+        ] { assert!(in_any_editor_dock(&rects, point)); }
+        assert!(!in_any_editor_dock(&rects, egui::pos2(500.0, 340.0)));
     }
 
     #[test]
