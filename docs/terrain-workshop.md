@@ -452,3 +452,57 @@ depart du vehicule sont egalement replies par defaut.
 La logique de sauvegarde JSON, la physique, les GLB et les regroupements
 de la PR 3 restent inchanges. Cette PR traite en priorite les retours
 d'ergonomie; elle ne cree ni nouveaux assets ni un nouveau systeme de terrain.
+
+
+## Editor V3 — Atelier de construction (PR #10)
+
+Premiere livraison de la refonte « jeu de construction/gestion », sans nouveaux
+assets ni systemes fictifs. La barre superieure contient les modes disponibles
+(Terrain, Sculpter, Objets, Scenes), l'annulation/refaire, la sauvegarde
+protegee et le basculement Edition/Conduite. Le menu « ⋯ » contient les
+diagnostics, la vue compacte et les options de navigation.
+
+Lorsque la fenetre fait au moins **1000 points logiques de large**, l'atelier
+reserve quatre zones autour de la scene 3D, sans superposer une fenetre
+flottante au paysage :
+
+- **En haut :** commandes globales, Undo/Redo, sauvegarde, conduite.
+- **A gauche :** barre courte d'outils pour changer de contexte.
+- **A droite :** inspecteur scrollable, outils adaptes au contexte, valeurs
+  des transformations des objets selectionnes, groupes/compositions et
+  reglages avances replies.
+- **En bas :** galerie horizontale d'assets en mode Objets, utilisant les
+  28 miniatures issues des meshes GLB et primitives deja embarques.
+  Recherche et categories, pose unique ou multiple.
+
+En dessous de 1000 points logiques, un bandeau superieur et un atelier
+inferieur remplacent les colonnes pour ne pas ecraser la vue 3D. La capture
+de pointeur couvre **toutes** les zones de panneaux, y compris quand egui
+les rend dans sa couche Background : defiler, cliquer et redimensionner un
+panneau ne doit pas sculpter, poser d'objet ou deplacer la camera.
+
+### Navigation de la camera en edition
+
+- **Clic droit maintenu :** orienter la camera.
+- **Clic molette maintenu :** deplacer la vue comme si on saisissait
+  le terrain, dans le **meme sens visuel** que le geste de souris
+  (horizontalement et verticalement, quel que soit le yaw).
+- **Espace + clic gauche maintenu :** meme panoramique, sans
+  selectionner, placer un asset, sculpter ni declencher un gizmo.
+- **Molette defilante :** zoomer/dezoomer.
+- **T :** masquer/afficher l'editeur.
+
+La preference « Panoramique historique » dans le menu ⋯ restaure
+l'ancienne orientation du glissement **horizontal**. Le champ de texte
+actif, les pop-ups egui et les interactions dans les panneaux conservent
+la priorite sur les raccourcis de la scene.
+
+### Périmètre et suite
+
+Ce changement recompose l'interface existante sans version de sauvegarde
+supplementaire, ni modification des colliders, GLB, seeds ou performances
+du terrain. La maquette de reference montre egalement des outils Routes,
+Defis, Ponts et Peindre : ils ne sont pas introduits ici car ils requierent
+leurs propres systemes, UX et validations. Les aspects artistiques precis
+(typographies, icones finales) et les miniatures des groupes feront partie
+d'une passe complementaire de design.
