@@ -421,6 +421,17 @@ fn show_workshop(
     // Panels reserve a persistent, predictable part of the usable screen;
     // unlike a floating window they do not cover the object being edited.
     let side = draft.dock.is_right(screen.width());
+    // egui 0.36 panels operate on a root Ui rather than directly on Context.
+    let mut viewport_ui = egui::Ui::new(
+        ctx.clone(),
+        "motor_trail_workshop_viewport".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+    let files = state.files.clone();
+    let status = state.status.clone();
+    let error = state.last_error.clone();
     let mut draw = |ui: &mut egui::Ui| {
         ui.spacing_mut().item_spacing = egui::vec2(7.0, 5.0);
         ui.horizontal(|ui| {
@@ -440,7 +451,7 @@ fn show_workshop(
             {
                 if view.file.is_some() {
                     enqueue(&mut action, WorkshopAction::Save);
-                } else if state.files.iter().any(|n|
+                } else if files.iter().any(|n|
                     same_scene_file(n, &controls.scene_name)) {
                     draft.confirmation = Some(Confirmation::SaveAs(controls.scene_name.clone()));
                 } else {
@@ -449,10 +460,10 @@ fn show_workshop(
             }
             ui.label(if view.file.is_some() { "Map enregistree" } else { "Map non sauvegardee" });
         });
-        if !state.status.is_empty() {
-            ui.label(&state.status);
+        if !status.is_empty() {
+            ui.label(&status);
         }
-        if let Some(error) = &state.last_error {
+        if let Some(error) = &error {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
         ui.horizontal_wrapped(|ui| {
@@ -494,7 +505,7 @@ fn show_workshop(
                     }
                     WorkshopTab::Scenes => {
                         scene_files(
-                            ui, &mut controls, &state.files, view.file, &mut draft, &mut action,
+                            ui, &mut controls, &files, view.file, &mut draft, &mut action,
                         );
                         ui.separator();
                         spawn_controls(
@@ -513,21 +524,21 @@ fn show_workshop(
     };
     let rect = if side {
         let max_width = (screen.width() * 0.45).min(480.0).max(270.0);
-        egui::SidePanel::right("motor_trail_workshop_dock_right")
+        egui::Panel::right("motor_trail_workshop_dock_right")
             .resizable(true)
-            .default_width(380.0_f32.min(max_width))
-            .min_width(265.0_f32.min(max_width))
-            .max_width(max_width)
-            .show(ctx, &mut draw)
+            .default_size(380.0_f32.min(max_width))
+            .min_size(265.0_f32.min(max_width))
+            .max_size(max_width)
+            .show(&mut viewport_ui, &mut draw)
             .response.rect
     } else {
         let height = (screen.height() * 0.37).clamp(185.0, 400.0);
-        egui::TopBottomPanel::bottom("motor_trail_workshop_dock_bottom")
+        egui::Panel::bottom("motor_trail_workshop_dock_bottom")
             .resizable(true)
-            .default_height(height)
-            .min_height(155.0_f32.min(screen.height() * 0.45))
-            .max_height((screen.height() * 0.65).max(155.0))
-            .show(ctx, &mut draw)
+            .default_size(height)
+            .min_size(155.0_f32.min(screen.height() * 0.45))
+            .max_size((screen.height() * 0.65).max(155.0))
+            .show(&mut viewport_ui, &mut draw)
             .response.rect
     };
     controls.open = open;
