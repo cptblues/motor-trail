@@ -246,6 +246,84 @@ pub(super) fn catalogue(
     chosen
 }
 
+/// Compact horizontal asset shelf, designed for the bottom dock. Uses the
+/// same source meshes, cached projections, IDs and filters as the side gallery.
+pub(super) fn catalogue_strip(
+    ui: &mut egui::Ui,
+    selected: ObstacleKind,
+    query: &mut String,
+    filter: &mut String,
+) -> Option<ObstacleKind> {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("BIBLIOTHÈQUE D'OBJETS").strong());
+        ui.add(egui::TextEdit::singleline(query)
+            .hint_text("Rechercher un arbre, une roche…")
+            .desired_width(215.0));
+        egui::ComboBox::from_id_salt("asset_shelf_category")
+            .selected_text(if filter.is_empty() { "Toutes" } else { filter.as_str() })
+            .show_ui(ui, |ui| {
+                for label in CATEGORIES {
+                    ui.selectable_value(filter, label.to_owned(), label);
+                }
+            });
+    });
+    let assets: Vec<_> = ObstacleKind::catalogue().collect();
+    let thumbnails = THUMBNAILS.get_or_init(|| assets.iter().copied().map(build_thumbnail).collect());
+    let mut chosen = None;
+    egui::ScrollArea::horizontal()
+        .id_salt("motor_trail_asset_shelf")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for (index, kind) in assets.iter().copied().enumerate() {
+                    if !matches(kind, query, filter) { continue; }
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(112.0, 121.0), egui::Sense::click());
+                    let painter = ui.painter_at(rect);
+                    let active = kind == selected;
+                    let background = if active {
+                        egui::Color32::from_rgb(209, 240, 223)
+                    } else {
+                        egui::Color32::from_rgb(238, 241, 237)
+                    };
+                    painter.rect_filled(rect, 7.0, background);
+                    painter.rect_stroke(
+                        rect, 7.0,
+                        egui::Stroke::new(
+                            if active { 2.0 } else { 1.0 },
+                            if active {
+                                egui::Color32::from_rgb(39, 169, 108)
+                            } else {
+                                egui::Color32::from_rgb(185, 194, 187)
+                            },
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    draw_thumbnail(&painter, egui::Rect::from_min_max(
+                        rect.min + egui::vec2(8.0, 5.0),
+                        egui::pos2(rect.max.x - 8.0, rect.max.y - 26.0),
+                    ), &thumbnails[index]);
+                    painter.text(
+                        egui::pos2(rect.center().x, rect.max.y - 13.0),
+                        egui::Align2::CENTER_CENTER,
+                        kind.name(),
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::from_rgb(32, 50, 42),
+                    );
+                    let dimensions = natural_size(kind);
+                    if response.on_hover_text(format!(
+                        "{}\n{:.1} × {:.1} × {:.1} m\nCliquer pour placer",
+                        kind.name(), dimensions[0], dimensions[1], dimensions[2],
+                    )).clicked() {
+                        chosen = Some(kind);
+                    }
+                }
+            });
+        });
+    chosen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
