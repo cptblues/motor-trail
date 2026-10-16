@@ -337,3 +337,41 @@ l'ancien panneau avec tous ses parametres, y compris Vallee historique.
 Cette livraison ne contient pas de gizmos 3D, de groupes, de prefabs, de
 generation automatique de vegetation ni de nouveaux GLB. L'interface des
 transformations numeriques et les outils du jeu restent disponibles.
+
+
+## Editor V2 — Transformations directes (PR 2)
+
+En mode **Edition > Objets**, selectionner un modele dans le monde ou dans la
+liste. Les boutons **G · Deplacer**, **R · Tourner**, **S · Taille** choisissent
+les trois gizmos ; les touches G, R, S agissent quand l'atelier est en mode
+Selectionner, hors champs de saisie. Les axes visibles utilisent X rouge, Y
+vert et Z bleu. Un drag reste verrouille sur la poignee choisie meme si la
+souris s'en eloigne. Maj reduit l'amplitude des mouvements, Echap et clic droit
+annulent le geste ; seul le relachement du clic gauche valide la modification.
+
+Lors d'une manipulation, un apercu separé sans collider utilise la geometrie
+et les couleurs d'origine. L'objet physique conserve sa pose pendant le geste.
+Une seule operation Undo/Redo est creee au relachement ; annuler n'ajoute rien.
+Le gizmo respecte les dimensions limitees a 0,1–32 m et ne modifie pas le
+format JSON. En cas de collision visuelle ou d'intersection, les objets restent
+libres de se superposer.
+
+**Suivre le sol** garde l'alignement initial au terrain ; en desactivant cette
+option et avec le champ **Decalage vertical**, on peut volontairement enfoncer
+ou surélever un objet lors du placement. Le bouton historique **Aligner au sol**
+reste disponible apres coup. La selection dans la liste permet de retrouver
+les objets totalement enterres.
+
+L'option **Aimantation** propose un pas de grille pour les translations et
+dimensions, ainsi qu'un pas angulaire pour les rotations. **Autres objets**
+aligne approximativement les boites englobantes voisines ; il ne s'agit pas
+d'un assemblage exact des triangles. Maintenir Alt pendant un drag ignore
+temporairement l'aimantation. **Taille uniforme** applique un facteur commun
+aux trois dimensions depuis la poignee active.
+
+### Limitations de la PR 2
+
+Les rotations sont converties dans les trois angles Euler YXZ deja utilises
+par Motor-Trail. La selection multiple, les compositions et une fusion
+geometrique sont hors scope (PR 3). Les apercus du catalogue de la PR 1,
+les GLB embarques et le packaging ne changent pas.
