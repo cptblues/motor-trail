@@ -457,9 +457,11 @@ d'ergonomie; elle ne cree ni nouveaux assets ni un nouveau systeme de terrain.
 ## Editor V3 — Atelier de construction (PR #10)
 
 Premiere livraison de la refonte « jeu de construction/gestion », sans nouveaux
-assets ni systemes fictifs. La barre superieure contient les modes disponibles
-(Terrain, Sculpter, Objets, Scenes), l'annulation/refaire, la sauvegarde
-protegee et le basculement Edition/Conduite. Le menu « ⋯ » contient les
+assets ni systemes fictifs. En **creation**, la barre superieure identifie
+le mode, l'outil actif, le nom de scene, les actions Annuler/Retablir,
+Sauvegarder et Tester. La navigation Terrain/Sculpter/Objets/Scenes se fait
+**uniquement a gauche** (ou dans l'atelier du bas en format compact)
+pour eviter deux menus redondants. Le menu « ⋯ » contient les
 diagnostics, la vue compacte et les options de navigation.
 
 Lorsque la fenetre fait au moins **1000 points logiques de large**, l'atelier
@@ -471,7 +473,7 @@ flottante au paysage :
 - **A droite :** inspecteur scrollable, outils adaptes au contexte, valeurs
   des transformations des objets selectionnes, groupes/compositions et
   reglages avances replies.
-- **En bas :** galerie horizontale d'assets en mode Objets, utilisant les
+- **En bas, uniquement dans Objets :** galerie horizontale d'assets, utilisant les
   28 miniatures issues des meshes GLB et primitives deja embarques.
   Recherche et categories, pose unique ou multiple.
 
@@ -505,7 +507,8 @@ du terrain. La maquette de reference montre egalement des outils Routes,
 Defis, Ponts et Peindre : ils ne sont pas introduits ici car ils requierent
 leurs propres systemes, UX et validations. Les aspects artistiques precis
 (typographies, icones finales) et les miniatures des groupes feront partie
-d'une passe complementaire de design.
+d'une passe complementaire de design. Les icones vectorielles des outils et
+actions courantes ont deja ete ajoutees.
 
 ### Mise au point ergonomique : modes, icones et catalogue redimensionnable
 
