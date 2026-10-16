@@ -340,13 +340,14 @@ fn terrain_workshop_ui(
         return Ok(());
     }
     let terrain = &active.scene.terrain;
+    let compositions = state.compositions.clone();
     let ground_height = |x, z| terrain.height(x, z);
     let view = WorkshopView {
         scene_name: &active.scene.name,
         config: &terrain.config,
         obstacles: &active.scene.obstacles,
         groups: &active.scene.groups,
-        compositions: &state.compositions,
+        compositions: &compositions,
         spawn: &active.scene.spawn,
         file: active.file.as_deref(),
         revision: active.revision,
