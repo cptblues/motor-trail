@@ -1012,11 +1012,6 @@ fn objects(
         });
     if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
         ui.separator();
-        if draft.object_baseline.as_ref() != draft.object.as_ref() && 
-            controls.selected == Some(object.id) {
-            // Numerical edits remain explicitly validated. During a drag the
-            // displayed draft tracks the transient candidate.
-        }
         object_transform(ui, object, baseline, action);
     }
     cursor_label(ui, controls.cursor);
