@@ -807,6 +807,7 @@ fn apply_stroke(
 
 fn editor_camera(
     state: Res<TerrainWorkshopState>,
+    manipulation: Res<GizmoGesture>,
     capture: Res<UiInputCapture>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -820,7 +821,7 @@ fn editor_camera(
     }
     let focused = windows.single().is_ok_and(|window| window.focused);
     if !capture.pointer && focused {
-        if mouse.pressed(MouseButton::Right) {
+        if mouse.pressed(MouseButton::Right) && !manipulation.block_orbit {
             orbit.yaw -= motion.delta.x * 0.006;
             orbit.pitch = (orbit.pitch + motion.delta.y * 0.006).clamp(0.15, 1.48);
         }
