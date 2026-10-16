@@ -2225,6 +2225,67 @@ mod tests {
     }
 
     #[test]
+    fn free_placement_offset_enters_the_ground_without_changing_the_object_schema() {
+        let mut app = placement_app();
+        {
+            let mut state = app.world_mut().resource_mut::<TerrainWorkshopState>();
+            state.placement_follow_ground = false;
+            state.placement_offset_y = -2.5;
+        }
+        placement_tick(&mut app);
+        let pose = preview_pose(&mut app);
+        assert!(pose.translation.y < 0.0, "free placement must allow burial");
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        let placed = &app.world().resource::<ActiveTerrain>().scene.obstacles[0];
+        assert_eq!(placed.transform(), pose);
+        assert_eq!(placed.size, [2.0, 1.4, 3.0]);
+        let json = serde_json::to_string(placed).unwrap();
+        let restored: Obstacle = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, *placed);
+    }
+
+    #[test]
+    fn transient_manipulation_preview_does_not_move_live_rapier_obstacle() {
+        let mut app = placement_app();
+        placement_tick(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        step(&mut app, 4);
+        let original = app.world().resource::<ActiveTerrain>().scene.obstacles[0].clone();
+        let body_entity = app.world_mut()
+            .query_filtered::<Entity, With<ObstacleEntity>>()
+            .single(app.world()).unwrap();
+        let pose = *app.world().get::<Transform>(body_entity).unwrap();
+        assert!(app.world().get::<Collider>(body_entity).is_some());
+        let history_before = app.world().resource::<ActiveTerrain>().history.undo_len();
+
+        let mut candidate = original.clone();
+        candidate.position[0] += 3.0;
+        app.world_mut().resource_mut::<GizmoGesture>().candidate = Some(candidate.clone());
+        step(&mut app, 1);
+        let overlay = app.world_mut().query::<(Entity, &Name)>()
+            .iter(app.world())
+            .find(|(_, name)| name.as_str() == "Manipulation preview")
+            .map(|(id, _)| id).expect("transient overlay must exist");
+        assert!(app.world().get::<Collider>(overlay).is_none());
+        assert!(app.world().get::<RigidBody>(overlay).is_none());
+        assert_eq!(*app.world().get::<Transform>(overlay).unwrap(), candidate.transform());
+        assert_eq!(*app.world().get::<Transform>(body_entity).unwrap(), pose);
+        assert_eq!(*app.world().get::<Visibility>(body_entity).unwrap(), Visibility::Hidden);
+        assert_eq!(app.world().resource::<ActiveTerrain>().scene.obstacles[0], original);
+        assert_eq!(app.world().resource::<ActiveTerrain>().history.undo_len(), history_before);
+
+        app.world_mut().resource_mut::<GizmoGesture>().candidate = None;
+        step(&mut app, 1);
+        assert!(app.world().get_entity(overlay).is_err());
+        assert_eq!(*app.world().get::<Visibility>(body_entity).unwrap(), Visibility::Inherited);
+        assert_eq!(app.world().resource::<ActiveTerrain>().scene.obstacles[0], original);
+    }
+
+    #[test]
     fn placement_preview_matches_catalog_geometry_and_exact_committed_pose() {
         for kind in ObstacleKind::catalogue() {
             let mut app = placement_app();
