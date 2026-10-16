@@ -47,9 +47,9 @@ pub(super) struct Drag {
     direction: Vec3,
 }
 #[derive(Resource, Default)]
-pub(super) struct GizmoGesture {
+pub(crate) struct GizmoGesture {
     pub(super) drag: Option<Drag>,
-    pub(super) candidate: Option<Obstacle>,
+    pub(crate) candidate: Option<Obstacle>,
 }
 
 pub(super) fn axis_length(pivot: Vec3, eye: Vec3) -> f32 {
