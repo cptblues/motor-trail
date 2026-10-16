@@ -433,6 +433,8 @@ fn process_actions(
         if gizmo.drag.is_some() {
             gizmo.drag = None;
             gizmo.candidate = None;
+            gizmo.candidates.clear();
+            gizmo.handle = None;
             // Undo/Redo during an unfinished drag only cancels that drag.
             // Other explicit actions can continue after the transient preview
             // has been safely discarded.
