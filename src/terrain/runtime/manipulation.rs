@@ -50,6 +50,7 @@ pub(super) struct Drag {
 pub(crate) struct GizmoGesture {
     pub(super) drag: Option<Drag>,
     pub(crate) candidate: Option<Obstacle>,
+    pub(crate) block_orbit: bool,
 }
 
 pub(super) fn axis_length(pivot: Vec3, eye: Vec3) -> f32 {
@@ -87,8 +88,8 @@ fn pick(ray: Ray3d, pivot: Vec3, length: f32, mode: GizmoMode) -> Option<(Axis, 
         let direction = axis.vector();
         let (scalar, v, error) = match mode {
             GizmoMode::Rotate => {
-                let vector = ring_vector(ray, pivot, direction)?;
-                let point = ray_plane(ray, pivot, direction)?;
+                let Some(point) = ray_plane(ray, pivot, direction) else { continue; };
+                let Some(vector) = (point - pivot).try_normalize() else { continue; };
                 let error = ((point - pivot).length() - length).abs();
                 (0.0, vector, error)
             }
@@ -215,6 +216,7 @@ pub(super) fn interact(
     ray: Option<Ray3d>,
     camera_eye: Vec3,
 ) -> bool {
+    gesture.block_orbit = false;
     let selected = state.selected.and_then(|id|
         active.scene.obstacles.iter().find(|o| o.id == id));
     let allowed = state.open && state.mode == WorkshopMode::Edit
@@ -225,6 +227,9 @@ pub(super) fn interact(
             || mouse.just_pressed(MouseButton::Right)
             || selected.is_none_or(|o| gesture.drag.as_ref().is_some_and(|g| o != &g.start));
         if cancelled {
+            // Cancellation by right-click must not orbit the camera on the same
+            // frame as the cancelled manipulation.
+            gesture.block_orbit = mouse.just_pressed(MouseButton::Right);
             keys.clear_just_pressed(KeyCode::Escape);
             gesture.drag = None;
             gesture.candidate = None;
