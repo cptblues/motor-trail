@@ -696,6 +696,53 @@ mod tests {
         assert_eq!(active.scene.obstacles[0].position[0], 1.5);
     }
     #[test]
+    fn group_translation_commits_one_history_entry_and_keeps_member_offsets() {
+        use crate::terrain::scene::{ReferenceScene, TerrainScene};
+        let first = object(1, 0.0);
+        let second = object(2, 3.0);
+        let originals = vec![first.clone(), second.clone()];
+        let mut active = ActiveTerrain::default();
+        active.scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        active.scene.obstacles = originals.clone();
+        let mut state = TerrainWorkshopState::default();
+        state.open = true;
+        state.mode = WorkshopMode::Edit;
+        state.tool = EditorTool::Select;
+        state.selected = Some(2);
+        state.selected_ids = vec![1,2];
+        let mut sync = TerrainSync::default();
+        let mut gesture = GizmoGesture::default();
+        let mut handle = second;
+        handle.position = center(&originals).to_array();
+        handle.rotation_degrees = [0.0; 3];
+        handle.size = [2.0; 3];
+        gesture.drag = Some(Drag {
+            start: handle.clone(), members: originals.clone(),
+            axis: Axis::X, mode: GizmoMode::Move,
+            length: 3.0, scalar: 0.5, direction: Vec3::ZERO,
+        });
+        gesture.handle = Some(handle);
+        gesture.candidates = originals.clone();
+        let mut mouse = ButtonInput::<MouseButton>::default();
+        let mut keys = ButtonInput::<KeyCode>::default();
+        mouse.press(MouseButton::Left);
+        assert!(interact(&mut gesture, &mut state, &mut active, &mut sync,
+            &UiInputCapture::default(), &mouse, &mut keys, true,
+            Some(pick_ray(3.5, 0.0)), Vec3::new(0.0, 10.0, 0.0)));
+        assert_eq!(active.scene.obstacles, originals, "drag must not touch Rapier/canonical scene");
+        assert_eq!(gesture.candidates.len(), 2);
+        assert_eq!(active.history.undo_len(), 0);
+        mouse.release(MouseButton::Left);
+        assert!(interact(&mut gesture, &mut state, &mut active, &mut sync,
+            &UiInputCapture::default(), &mouse, &mut keys, true,
+            None, Vec3::new(0.0, 10.0, 0.0)));
+        assert_eq!(active.history.undo_len(), 1);
+        assert_eq!(active.scene.obstacles[1].position[0] - active.scene.obstacles[0].position[0], 3.0);
+        assert!(active.history.undo(&mut active.scene));
+        assert_eq!(active.scene.obstacles, originals);
+    }
+
+    #[test]
     fn click_without_change_does_not_modify_the_baseline() {
         let starting = object(1, 0.0);
         let mut gesture = GizmoGesture::default();
