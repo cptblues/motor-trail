@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::compositions::{ObjectGroup, validate_groups};
 use super::config::{TerrainConfig, TerrainPreset};
 use super::data::TerrainData;
 use super::generation::{GENERATOR_VERSION, generate};
@@ -65,6 +66,8 @@ pub struct TerrainScene {
     pub name: String,
     pub terrain: TerrainData,
     pub obstacles: Vec<Obstacle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ObjectGroup>,
     pub spawn: VehicleSpawn,
 }
 
@@ -83,6 +86,7 @@ impl TerrainScene {
             name: name.into(),
             terrain,
             obstacles: Vec::new(),
+            groups: Vec::new(),
             spawn: VehicleSpawn {
                 position: [0.0, y, z],
                 yaw_degrees: 0.0,
@@ -203,7 +207,8 @@ impl TerrainScene {
         validate_name(&self.name)?;
         self.terrain.validate()?;
         self.spawn.validate(&self.terrain)?;
-        validate_obstacles(&self.obstacles)
+        validate_obstacles(&self.obstacles)?;
+        validate_groups(&self.groups, &self.obstacles)
     }
 
     pub fn next_id(&self) -> u64 {
