@@ -300,3 +300,40 @@ mesures de cout de reconstruction, gizmos de translation/rotation, surface IDs
 persistants relies a SurfaceGrip puis validation de leur friction, et cache de
 collisions de grandes cartes. Les snapshots peuvent devenir des fichiers
 binaires par chunk tout en conservant le manifeste JSON versionne.
+
+
+## Editor V2 — Catalogue et generation rapide (PR 1)
+
+Dans **T > Edition > Objets**, le catalogue affiche les 23 GLB Nature et
+les cinq primitives. Les vignettes sont projetees depuis la geometrie reelle
+des objets, avec les couleurs et facettes des modeles. Ces miniatures sont
+calculees et mises en cache une fois pendant la session ; il n'y a pas de
+fichiers PNG additionnels a integrer dans les archives Windows/macOS.
+
+- Rechercher le nom ou la categorie, avec une recherche insensible aux accents
+  et a la casse. Filtrer par categorie avec la liste deroulante.
+- Cliquer une carte pour choisir l'outil Placer et les dimensions naturelles.
+- **Unique** (par defaut) : le clic dans le monde place l'objet, le selectionne,
+  puis passe en outil Selectionner.
+- **Multiple** : les clics successifs ajoutent des objets sans changer d'outil.
+  Le dernier reste selectionne. Q/E tourne l'aperçu, Maj reduit le pas de 15 a
+  5 degres ; Escape / clic droit termine la pose.
+- Les clics dans l'interface ne placent pas d'objets. Les objets poses utilisent
+  le meme schema JSON stable, les memes colliders et le meme historique Undo/Redo.
+
+Dans **Generation**, Creation rapide propose quatre presets, une intensite de
+relief 0-100 %, largeur et profondeur, graine u64 copiable, bouton Autre variante
+et bouton Generer. La valeur 50 % correspond a l'amplitude par defaut du preset,
+0 % a un terrain plat, 100 % au double de l'amplitude (borne a 256 m).
+Il n'y a **aucun changement** a l'algorithme ou a la version des seeds.
+
+Le bouton Autre variante utilise une transformation deterministe SplitMix64
+du seed et ne modifie que le brouillon de generation. La scene active ne change
+qu'apres **Confirmer**. Le dialogue rappelle que relief, objets et depart
+courants sont remplaces ; sauvegarder la map avant est conseille. Le bouton
+Annuler conserve integralement la scene active. La section Avance rassemble
+l'ancien panneau avec tous ses parametres, y compris Vallee historique.
+
+Cette livraison ne contient pas de gizmos 3D, de groupes, de prefabs, de
+generation automatique de vegetation ni de nouveaux GLB. L'interface des
+transformations numeriques et les outils du jeu restent disponibles.
