@@ -375,3 +375,43 @@ Les rotations sont converties dans les trois angles Euler YXZ deja utilises
 par Motor-Trail. La selection multiple, les compositions et une fusion
 geometrique sont hors scope (PR 3). Les apercus du catalogue de la PR 1,
 les GLB embarques et le packaging ne changent pas.
+
+## Editor V2 — Selection multiple, groupes et compositions (PR 3)
+
+Dans **Edition > Objets**, Maj + clic dans le monde ou la liste ajoute ou retire des
+objets. Cliquer sans Maj remplace la selection. Un groupe est selectionne en
+entier, meme lorsqu'on clique un de ses elements. Pour modifier un element
+individuellement, utiliser **Degrouper** puis regrouper les pieces voulues.
+**Tout selectionner** et **Deselectionner** sont egalement disponibles.
+
+A partir de deux objets, donner un nom puis cliquer sur **Grouper**.
+Il s'agit d'une fusion logique et non d'une union geometrique : chaque
+objet conserve son mesh GLB, sa taille, son ID et son collider. Chaque objet
+appartient au plus a un groupe. G, R et S manipulent l'ensemble autour
+de son centre, avec les gizmos et les aimantations de la PR 2. Les
+deplacements, rotations, changements de taille, duplications, groupements
+et degroupements produisent un seul Undo/Redo atomique.
+
+Les groupes sont stockes dans le champ facultatif groups de la scene JSON
+format_version 1. Les anciennes maps sans ce champ restent lisibles.
+La suppression nettoie les references des groupes ; ceux qui comptent moins
+de deux membres sont dissous. Les references et appartenances sont validees
+au chargement.
+
+### Mes compositions
+
+Une selection de 2 a 64 objets peut etre sauvegardee sous un nom dans le
+sous-dossier utilisateur terrains/compositions/, en JSON versionne.
+Les noms de fichiers sont controles, et une composition existante
+ne peut pas etre ecrasee accidentellement.
+
+Les compositions sauvegardees apparaissent sous **Mes compositions**.
+**Inserer** copie leurs objets au curseur, ou pres du depart si aucun
+point n'est vise, avec de nouveaux IDs et un nouveau groupe. Les meshes
+sont exclusivement des assets officiels embarques, si bien que les maps
+partagees restent independantes de la bibliotheque personnelle.
+
+**Limites UX de cette PR :** la bibliotheque de compositions affiche
+des lignes nommees plutot que des apercus 3D. L'insertion s'effectue
+au curseur par bouton, sans ghost multi-objets avant confirmation.
+Ces points peuvent etre ameliores dans la PR 4.
