@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::mem::size_of;
 
 use super::brush::HeightChange;
+use super::compositions::{ObjectGroup, validate_groups};
 use super::config::MAX_VERTICES;
 use super::obstacles::Obstacle;
 use super::scene::{TerrainScene, validate_obstacles};
@@ -16,6 +17,13 @@ pub enum EditOperation {
     Objects {
         before: Vec<Obstacle>,
         after: Vec<Obstacle>,
+    },
+    /// An atomic change of objects and membership metadata.
+    ObjectsGroups {
+        before: Vec<Obstacle>,
+        after: Vec<Obstacle>,
+        groups_before: Vec<ObjectGroup>,
+        groups_after: Vec<ObjectGroup>,
     },
 }
 
@@ -138,6 +146,21 @@ impl EditOperation {
                 after.shrink_to_fit();
                 Some(Self::Objects { before, after })
             }
+            Self::ObjectsGroups { mut before, mut after, mut groups_before, mut groups_after } => {
+                if (before == after && groups_before == groups_after)
+                    || validate_obstacles(&before).is_err()
+                    || validate_obstacles(&after).is_err()
+                    || validate_groups(&groups_before, &before).is_err()
+                    || validate_groups(&groups_after, &after).is_err()
+                {
+                    return None;
+                }
+                before.shrink_to_fit();
+                after.shrink_to_fit();
+                groups_before.shrink_to_fit();
+                groups_after.shrink_to_fit();
+                Some(Self::ObjectsGroups { before, after, groups_before, groups_after })
+            }
         }
     }
 
@@ -146,6 +169,13 @@ impl EditOperation {
             Self::Sculpt(changes) => changes.capacity() * size_of::<HeightChange>(),
             Self::Objects { before, after } => {
                 (before.capacity() + after.capacity()) * size_of::<Obstacle>()
+            }
+            Self::ObjectsGroups { before, after, groups_before, groups_after } => {
+                (before.capacity() + after.capacity()) * size_of::<Obstacle>()
+                    + (groups_before.capacity() + groups_after.capacity()) * size_of::<ObjectGroup>()
+                    + groups_before.iter().chain(groups_after.iter())
+                        .map(|g| g.name.capacity() + g.members.capacity() * size_of::<u64>())
+                        .sum::<usize>()
             }
         }
     }
@@ -190,6 +220,22 @@ impl EditOperation {
                 scene.obstacles.clone_from(replacement);
                 true
             }
+            Self::ObjectsGroups { before, after, groups_before, groups_after } => {
+                let (expected, replacement, expected_groups, replacement_groups) = if forward {
+                    (before, after, groups_before, groups_after)
+                } else {
+                    (after, before, groups_after, groups_before)
+                };
+                if scene.obstacles != *expected || scene.groups != *expected_groups
+                    || validate_obstacles(replacement).is_err()
+                    || validate_groups(replacement_groups, replacement).is_err()
+                {
+                    return false;
+                }
+                scene.obstacles.clone_from(replacement);
+                scene.groups.clone_from(replacement_groups);
+                true
+            }
         }
     }
 }
@@ -198,6 +244,48 @@ impl EditOperation {
 mod tests {
     use super::super::scene::ReferenceScene;
     use super::*;
+
+    #[test]
+    fn group_membership_and_deletion_are_one_atomic_undo_entry() {
+        use crate::terrain::compositions::ObjectGroup;
+        use crate::terrain::obstacles::ObstacleKind;
+        let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let obj = |id| Obstacle {
+            id, kind: ObstacleKind::Cube, position: [id as f32, 1.0, 0.0],
+            rotation_degrees: [0.0; 3], size: [1.0; 3],
+        };
+        scene.obstacles = vec![obj(1),obj(2),obj(3)];
+        let mut history = EditHistory::default();
+        let group = ObjectGroup { id: 1, name: "Passage".into(), members: vec![1,2,3] };
+        history.push(EditOperation::ObjectsGroups {
+            before: scene.obstacles.clone(), after: scene.obstacles.clone(),
+            groups_before: vec![], groups_after: vec![group.clone()],
+        });
+        assert!(history.redo_len() == 0);
+        scene.groups.push(group.clone());
+        assert_eq!(history.undo_len(), 1);
+        assert!(history.undo(&mut scene));
+        assert!(scene.groups.is_empty());
+        assert!(history.redo(&mut scene));
+        assert_eq!(scene.groups, vec![group.clone()]);
+
+        let before = scene.obstacles.clone();
+        let after = vec![obj(1),obj(2)];
+        let mut smaller = group;
+        smaller.members = vec![1,2];
+        history.push(EditOperation::ObjectsGroups {
+            before, after: after.clone(),
+            groups_before: scene.groups.clone(), groups_after: vec![smaller.clone()],
+        });
+        scene.obstacles = after;
+        scene.groups = vec![smaller];
+        assert!(history.undo(&mut scene));
+        assert_eq!(scene.obstacles.len(), 3);
+        assert_eq!(scene.groups[0].members.len(), 3);
+        assert!(history.redo(&mut scene));
+        assert_eq!(scene.obstacles.len(), 2);
+        assert_eq!(scene.groups[0].members.len(), 2);
+    }
 
     #[test]
     fn whole_stroke_roundtrip_and_branch_invalidation() {

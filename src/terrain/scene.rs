@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::compositions::{ObjectGroup, validate_groups};
 use super::config::{TerrainConfig, TerrainPreset};
 use super::data::TerrainData;
 use super::generation::{GENERATOR_VERSION, generate};
@@ -65,6 +66,8 @@ pub struct TerrainScene {
     pub name: String,
     pub terrain: TerrainData,
     pub obstacles: Vec<Obstacle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ObjectGroup>,
     pub spawn: VehicleSpawn,
 }
 
@@ -83,6 +86,7 @@ impl TerrainScene {
             name: name.into(),
             terrain,
             obstacles: Vec::new(),
+            groups: Vec::new(),
             spawn: VehicleSpawn {
                 position: [0.0, y, z],
                 yaw_degrees: 0.0,
@@ -203,7 +207,8 @@ impl TerrainScene {
         validate_name(&self.name)?;
         self.terrain.validate()?;
         self.spawn.validate(&self.terrain)?;
-        validate_obstacles(&self.obstacles)
+        validate_obstacles(&self.obstacles)?;
+        validate_groups(&self.groups, &self.obstacles)
     }
 
     pub fn next_id(&self) -> u64 {
@@ -428,6 +433,38 @@ mod tests {
         let ruts = TerrainScene::reference(ReferenceScene::Ruts).unwrap();
         assert!(ruts.terrain.height(1.0, 0.0).unwrap() < -0.3);
         assert_eq!(ruts.terrain.height(0.0, 0.0), Some(0.0));
+    }
+
+    #[test]
+    fn original_v1_files_without_groups_still_roundtrip_identically() {
+        let scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        let serialized = serde_json::to_value(&scene).unwrap();
+        assert!(serialized.get("groups").is_none(), "empty optional metadata must be omitted");
+        let legacy: TerrainScene = serde_json::from_value(serialized).unwrap();
+        assert!(legacy.groups.is_empty());
+        assert_eq!(legacy, scene);
+    }
+
+    #[test]
+    fn v1_group_membership_roundtrips_and_rejects_corrupt_references() {
+        use crate::terrain::compositions::ObjectGroup;
+        let mut scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        for id in [10, 20, 30] {
+            scene.obstacles.push(Obstacle {
+                id, kind: ObstacleKind::Cube, position: [id as f32 / 10.0, 1.0, 0.0],
+                rotation_degrees: [0.0; 3], size: [2.0; 3],
+            });
+        }
+        scene.groups.push(ObjectGroup {
+            id: 1, name: "Petit pont".into(), members: vec![10,20],
+        });
+        scene.validate().unwrap();
+        let data = serde_json::to_vec(&scene).unwrap();
+        let restored: TerrainScene = serde_json::from_slice(&data).unwrap();
+        assert_eq!(restored, scene);
+        let mut invalid = restored;
+        invalid.groups[0].members.push(99);
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

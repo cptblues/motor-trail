@@ -1,5 +1,6 @@
 //! Canonical terrain, editing tools, scene storage and the Bevy/Rapier bridge.
 pub mod brush;
+pub mod compositions;
 pub mod config;
 pub mod data;
 pub mod generation;

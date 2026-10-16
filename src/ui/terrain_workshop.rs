@@ -6,6 +6,7 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use crate::terrain::brush::{Brush, BrushKind};
 use crate::terrain::config::{TerrainConfig, TerrainPreset};
 use crate::terrain::obstacles::{Obstacle, ObstacleKind};
+use crate::terrain::compositions::{ObjectGroup, expanded_selection};
 use crate::terrain::runtime::{
     ActiveTerrain, EditorTool, GizmoMode, PlacementMode, TerrainWorkshopState, WorkshopAction, WorkshopMode,
 };
@@ -125,6 +126,8 @@ struct UiDraft {
     asset_query: String,
     asset_category: String,
     quick_relief: Option<u8>,
+    group_name: String,
+    composition_name: String,
 }
 
 /// Only editable controls are copied. Files, heightmaps and object lists stay borrowed.
@@ -148,6 +151,7 @@ struct Controls {
     uniform_scale: bool,
     placement_yaws: Vec<(ObstacleKind, f32)>,
     selected: Option<u64>,
+    selected_ids: Vec<u64>,
     scene_name: String,
     file_selection: String,
     cursor: Option<Vec3>,
@@ -187,6 +191,7 @@ impl Controls {
                 .map(|kind| (kind, state.placement_yaw_degrees(kind)))
                 .collect(),
             selected: state.selected,
+            selected_ids: state.selection(),
             scene_name: state.scene_name.clone(),
             file_selection: state.file_selection.clone(),
             cursor: state.cursor,
@@ -292,6 +297,7 @@ impl WorkshopUi {
         state.snap_angle = controls.snap_angle.clamp(1.0, 90.0);
         state.uniform_scale = controls.uniform_scale;
         state.selected = controls.selected;
+        state.selected_ids = controls.selected_ids.clone();
         state.scene_name.clone_from(&controls.scene_name);
         state.file_selection.clone_from(&controls.file_selection);
         if let Some(action) = action {
@@ -304,6 +310,8 @@ struct WorkshopView<'a> {
     scene_name: &'a str,
     config: &'a TerrainConfig,
     obstacles: &'a [Obstacle],
+    groups: &'a [ObjectGroup],
+    compositions: &'a [String],
     spawn: &'a VehicleSpawn,
     file: Option<&'a str>,
     revision: u64,
@@ -332,11 +340,14 @@ fn terrain_workshop_ui(
         return Ok(());
     }
     let terrain = &active.scene.terrain;
+    let compositions = state.compositions.clone();
     let ground_height = |x, z| terrain.height(x, z);
     let view = WorkshopView {
         scene_name: &active.scene.name,
         config: &terrain.config,
         obstacles: &active.scene.obstacles,
+        groups: &active.scene.groups,
+        compositions: &compositions,
         spawn: &active.scene.spawn,
         file: active.file.as_deref(),
         revision: active.revision,
@@ -424,7 +435,7 @@ fn show_workshop(
                         WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
                         WorkshopTab::Sculpture => sculpture(ui, &mut controls),
                         WorkshopTab::Objects => {
-                            objects(ui, &mut controls, view.obstacles, &mut draft, &mut action)
+                            objects(ui, &mut controls, view.obstacles, view.groups, view.compositions, view.spawn, &mut draft, &mut action)
                         }
                         WorkshopTab::Scenes => {
                             scene_files(
@@ -919,6 +930,9 @@ fn objects(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     obstacles: &[Obstacle],
+    groups: &[ObjectGroup],
+    compositions: &[String],
+    spawn: &VehicleSpawn,
     draft: &mut UiDraft,
     action: &mut Option<WorkshopAction>,
 ) {
@@ -990,29 +1004,116 @@ fn objects(
         .map_or(0.0, |(_, yaw)| *yaw);
     ui.label(format!("Lacet de placement : {yaw:.0} deg"));
     ui.separator();
-    ui.strong(format!("Objets ({})", obstacles.len()));
+    ui.strong(format!("Objets ({}) · {} selectionne(s)", obstacles.len(), controls.selected_ids.len()));
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Tout selectionner").clicked() {
+            controls.selected_ids = obstacles.iter().map(|o| o.id).collect();
+            controls.selected = controls.selected_ids.last().copied();
+            controls.tool = EditorTool::Select;
+        }
+        if ui.button("Deselectionner").clicked() {
+            controls.selected_ids.clear();
+            controls.selected = None;
+        }
+    });
     egui::ScrollArea::vertical()
         .id_salt("terrain_objects")
-        .max_height(150.0)
+        .max_height(170.0)
         .show(ui, |ui| {
             for object in obstacles {
-                if ui
-                    .selectable_label(
-                        controls.selected == Some(object.id),
-                        format!("#{} {}", object.id, object.kind.name()),
-                    )
-                    .clicked()
-                {
-                    controls.selected = Some(object.id);
+                let group = groups.iter().find(|g| g.members.contains(&object.id));
+                let label = match group {
+                    Some(g) => format!("#{} {} · {}", object.id, object.kind.name(), g.name),
+                    None => format!("#{} {}", object.id, object.kind.name()),
+                };
+                if ui.selectable_label(controls.selected_ids.contains(&object.id), label)
+                    .on_hover_text("Maj + clic : ajouter ou retirer de la selection")
+                    .clicked() {
+                    let members = expanded_selection(object.id, groups);
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    if shift {
+                        let remove = members.iter().all(|id| controls.selected_ids.contains(id));
+                        if remove {
+                            controls.selected_ids.retain(|id| !members.contains(id));
+                        } else {
+                            for id in members {
+                                if !controls.selected_ids.contains(&id) {
+                                    controls.selected_ids.push(id);
+                                }
+                            }
+                        }
+                    } else {
+                        controls.selected_ids = members;
+                    }
+                    controls.selected = controls.selected_ids.last().copied();
                     controls.tool = EditorTool::Select;
-                    draft.object = Some(object.clone());
-                    draft.object_baseline = Some(object.clone());
+                    if controls.selected_ids.len() == 1 {
+                        draft.object = Some(object.clone());
+                        draft.object_baseline = Some(object.clone());
+                    } else {
+                        draft.object = None;
+                        draft.object_baseline = None;
+                    }
                 }
             }
         });
-    if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
-        ui.separator();
+    ui.separator();
+    let number = controls.selected_ids.len();
+    if number > 1 {
+        ui.strong(format!("Ensemble de {number} objets"));
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Nom");
+            ui.add(egui::TextEdit::singleline(&mut draft.group_name)
+                .hint_text("Passage rocheux").desired_width(180.0));
+        });
+        let grouped = groups.iter().any(|g|
+            g.members.iter().any(|id| controls.selected_ids.contains(id)));
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(!grouped && !draft.group_name.trim().is_empty(),
+                    egui::Button::new("Grouper")).clicked() {
+                enqueue(action, WorkshopAction::GroupSelection(draft.group_name.trim().to_owned()));
+            }
+            if ui.add_enabled(grouped, egui::Button::new("Degrouper")).clicked() {
+                enqueue(action, WorkshopAction::UngroupSelection);
+            }
+            if ui.button("Dupliquer l'ensemble").clicked() {
+                enqueue(action, WorkshopAction::DuplicateSelection);
+            }
+            if ui.button("Supprimer l'ensemble").clicked() {
+                enqueue(action, WorkshopAction::DeleteSelection);
+            }
+        });
+        ui.small("Les gizmos G/R/S agissent sur tout l'ensemble autour de son centre, sans fusionner les meshes.");
+    } else if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
         object_transform(ui, object, baseline, action);
+    }
+    ui.separator();
+    ui.heading("Mes compositions");
+    ui.small("Construisez un ensemble, puis sauvegardez-le pour le reposer sur une autre map.");
+    ui.horizontal_wrapped(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut draft.composition_name)
+            .hint_text("Bivouac forestier").desired_width(180.0));
+        if ui.add_enabled((2..=64).contains(&number) && !draft.composition_name.trim().is_empty(),
+                egui::Button::new("Enregistrer la composition")).clicked() {
+            enqueue(action, WorkshopAction::SaveComposition(draft.composition_name.trim().to_owned()));
+        }
+        if ui.button("Actualiser").clicked() {
+            enqueue(action, WorkshopAction::RefreshCompositions);
+        }
+    });
+    for name in compositions {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(name);
+            if ui.button(format!("Inserer##{name}"))
+                .on_hover_text("Placer l'assemblage pres du curseur ; sinon au depart du joueur")
+                .clicked() {
+                let origin = controls.cursor.unwrap_or(Vec3::from_array(spawn.position));
+                enqueue(action, WorkshopAction::InsertComposition(name.clone(), origin.to_array()));
+            }
+        });
+    }
+    if compositions.is_empty() {
+        ui.small("Aucune composition. Selectionnez au moins deux objets pour commencer.");
     }
     cursor_label(ui, controls.cursor);
 }
@@ -1824,6 +1925,8 @@ mod tests {
                     scene_name: "Terrain headless",
                     config: &expected,
                     obstacles: &[],
+                    groups: &[],
+                    compositions: &[],
                     spawn: &spawn,
                     file: None,
                     revision: 4,
