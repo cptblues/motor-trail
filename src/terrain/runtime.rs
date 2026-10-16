@@ -2490,6 +2490,22 @@ mod tests {
     }
 
     #[test]
+    fn space_left_drag_is_reserved_for_camera_and_never_places_an_asset() {
+        let mut app = placement_app();
+        placement_tick(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        let state = app.world().resource::<TerrainWorkshopState>();
+        assert_eq!(state.tool, EditorTool::Place,
+            "space-drag must not exit placement mode");
+        assert!(app.world().resource::<ActiveTerrain>().scene.obstacles.is_empty(),
+            "a camera drag must not place an obstacle");
+    }
+
+    #[test]
     fn one_click_places_and_selects_in_single_mode() {
         let mut app = placement_app();
         assert_eq!(
