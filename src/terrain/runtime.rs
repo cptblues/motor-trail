@@ -321,6 +321,10 @@ fn refresh_files(store: Res<TerrainStore>, mut state: ResMut<TerrainWorkshopStat
         Ok(files) => state.files = files,
         Err(error) => state.last_error = Some(error),
     }
+    match store.list_compositions() {
+        Ok(compositions) => state.compositions = compositions,
+        Err(error) => state.last_error = Some(error),
+    }
 }
 
 fn shortcuts(
