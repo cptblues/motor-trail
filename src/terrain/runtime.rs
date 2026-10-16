@@ -36,10 +36,27 @@ pub enum EditorTool {
     Select,
 }
 
+/// Defines whether the current asset is placed once or repeatedly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlacementMode {
+    #[default]
+    Single,
+    Multiple,
+}
+
+impl PlacementMode {
+    fn next_tool(self) -> EditorTool {
+        match self {
+            Self::Single => EditorTool::Select,
+            Self::Multiple => EditorTool::Place,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum WorkshopAction {
     SetMode(WorkshopMode),
-    Generate,
+    Generate(TerrainConfig),
     LoadReference(ReferenceScene),
     New,
     SaveAs(String),
@@ -65,6 +82,7 @@ pub struct TerrainWorkshopState {
     pub tool: EditorTool,
     pub object_kind: ObstacleKind,
     pub object_size: [f32; 3],
+    pub placement_mode: PlacementMode,
     placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
     pub scene_name: String,
@@ -86,6 +104,7 @@ impl Default for TerrainWorkshopState {
             tool: EditorTool::Sculpt,
             object_kind: ObstacleKind::Rock,
             object_size: [2.0, 1.0, 2.0],
+            placement_mode: PlacementMode::Single,
             placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
             scene_name: "Mon terrain".into(),
@@ -383,9 +402,12 @@ fn apply_action(
             sync.car_ready = false;
             state.cursor = None;
         }
-        WorkshopAction::Generate => {
-            let scene = TerrainScene::generate(&state.scene_name, state.draft.clone())?;
+        WorkshopAction::Generate(config) => {
+            // The accepted draft is frozen at confirmation time, not read from
+            // potentially edited UI controls a frame later.
+            let scene = TerrainScene::generate(&state.scene_name, config.clone())?;
             install_scene(scene, None, active, state, sync, camera)?;
+            state.draft = config;
             state.status = "Terrain genere".into();
             return Ok(true);
         }
@@ -672,6 +694,7 @@ fn editor_interaction(
                         state.selected = Some(id);
                         state.last_error = None;
                         preview.confirmed(active.revision);
+                        state.tool = state.placement_mode.next_tool();
                     }
                     Err(error) => {
                         preview.reject(error.clone());
@@ -1672,7 +1695,8 @@ mod tests {
             state.draft.depth = 8.0;
             state.draft.resolution = 0.5;
         }
-        queue(&mut app, WorkshopAction::Generate);
+        let config = app.world().resource::<TerrainWorkshopState>().draft.clone();
+        queue(&mut app, WorkshopAction::Generate(config));
         step(&mut app, 4);
         assert_eq!(
             app.world()
@@ -2119,9 +2143,32 @@ mod tests {
     }
 
     #[test]
+    fn one_click_places_and_selects_in_single_mode() {
+        let mut app = placement_app();
+        assert_eq!(
+            app.world().resource::<TerrainWorkshopState>().placement_mode,
+            PlacementMode::Single,
+        );
+        placement_tick(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        let state = app.world().resource::<TerrainWorkshopState>();
+        assert_eq!(state.tool, EditorTool::Select);
+        assert_eq!(state.selected, Some(1));
+        assert_eq!(
+            app.world().resource::<ActiveTerrain>().scene.obstacles.len(), 1,
+        );
+        assert!(preview_entity(&mut app).is_none());
+    }
+
+    #[test]
     fn placement_preview_matches_catalog_geometry_and_exact_committed_pose() {
         for kind in ObstacleKind::catalogue() {
             let mut app = placement_app();
+            app.world_mut().resource_mut::<TerrainWorkshopState>().placement_mode =
+                PlacementMode::Multiple;
             app.world_mut()
                 .resource_mut::<TerrainWorkshopState>()
                 .object_kind = kind;
@@ -2620,6 +2667,8 @@ mod tests {
     #[test]
     fn placement_preview_aligns_to_slopes_and_confirmation_uses_the_fresh_pick() {
         let mut app = placement_app();
+        app.world_mut().resource_mut::<TerrainWorkshopState>().placement_mode =
+            PlacementMode::Multiple;
         {
             let mut active = app.world_mut().resource_mut::<ActiveTerrain>();
             let terrain = &mut active.scene.terrain;
@@ -2916,5 +2965,18 @@ mod tests {
             assert_eq!(active.history.undo_len(), 1);
             assert!(!app.world().resource::<EditorGesture>().active);
         }
+    }
+}
+
+
+#[cfg(test)]
+mod editor_placement_mode_tests {
+    use super::*;
+
+    #[test]
+    fn single_place_selects_while_multiple_keeps_placing() {
+        assert_eq!(PlacementMode::Single.next_tool(), EditorTool::Select);
+        assert_eq!(PlacementMode::Multiple.next_tool(), EditorTool::Place);
+        assert_eq!(PlacementMode::default(), PlacementMode::Single);
     }
 }
