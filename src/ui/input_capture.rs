@@ -1,5 +1,6 @@
 //! One owner for input capture across all egui windows.
 use super::physics_tuning::PhysicsTuningState;
+use super::terrain_workshop::WorkshopDockBounds;
 use crate::terrain::runtime::TerrainWorkshopState;
 use bevy::input::InputSystems;
 use bevy::prelude::*;
@@ -49,10 +50,15 @@ impl Plugin for UiInputPlugin {
     }
 }
 
+fn in_editor_dock(rect: Option<egui::Rect>, point: egui::Pos2) -> bool {
+    rect.is_some_and(|bounds| bounds.contains(point))
+}
+
 fn refresh_input_capture(
     mut contexts: EguiContexts,
     physics: Res<PhysicsTuningState>,
     terrain: Option<Res<TerrainWorkshopState>>,
+    dock: Option<Res<WorkshopDockBounds>>,
     mut capture: ResMut<UiInputCapture>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -76,7 +82,14 @@ fn refresh_input_capture(
                 .and_then(|window| {
                     window.cursor_position().map(|position| {
                         let scale = ctx.pixels_per_point() / window.scale_factor();
-                        ctx.layer_id_at(egui::pos2(position.x / scale, position.y / scale))
+                        let pointer = egui::pos2(position.x / scale, position.y / scale);
+                        // Panels are laid out on a background root Ui in egui
+                        // 0.36, so layer_id_at may return Background even
+                        // while the cursor is interacting with a dock widget.
+                        let over_dock = terrain.as_ref().is_some_and(|state| state.open)
+                            && dock.as_ref().is_some_and(|dock|
+                                in_editor_dock(dock.rect, pointer));
+                        over_dock || ctx.layer_id_at(pointer)
                             .is_some_and(|layer| layer.order != egui::Order::Background)
                     })
                 })
@@ -96,6 +109,15 @@ fn refresh_input_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn docked_panel_captures_clicks_even_when_on_egui_background_layer() {
+        let rect = egui::Rect::from_min_size(egui::pos2(900.0, 0.0), egui::vec2(400.0, 800.0));
+        assert!(in_editor_dock(Some(rect), egui::pos2(910.0, 50.0)));
+        assert!(in_editor_dock(Some(rect), egui::pos2(1200.0, 750.0)));
+        assert!(!in_editor_dock(Some(rect), egui::pos2(400.0, 50.0)));
+        assert!(!in_editor_dock(None, egui::pos2(910.0, 50.0)));
+    }
+
     #[test]
     fn a_ui_drag_stays_owned_until_release() {
         let mut owner = PointerOwner::default();
