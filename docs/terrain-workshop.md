@@ -415,3 +415,40 @@ partagees restent independantes de la bibliotheque personnelle.
 des lignes nommees plutot que des apercus 3D. L'insertion s'effectue
 au curseur par bouton, sans ghost multi-objets avant confirmation.
 Ces points peuvent etre ameliores dans la PR 4.
+
+## Editor V2 — Panneau ancre et navigation simplifiee (PR 4)
+
+L'atelier n'est plus une fenetre flottante devant le relief :
+- Sur les ecrans larges (880 points logiques ou plus), il est ancre a droite
+  et redimensionnable en largeur, en laissant le terrain accessible.
+- Sur les ecrans plus etroits, il est automatiquement ancre en bas, avec une
+  hauteur ajustable. Le menu **Plus** permet de choisir Automatique, A droite
+  ou En bas. La disposition forcee a droite repasse en bas si l'ecran devient
+  trop etroit pour etre utilisable.
+- **Masquer [T]** et le raccourci **T** liberent totalement le terrain sans
+  effacer la scene ou la selection.
+
+La navigation dans l'editeur conserve clic droit pour orienter la camera
+et la molette pour zoomer. Le **clic molette glisse** a maintenant un sens
+inverse de l'ancien, conforme au retour utilisateur. L'option
+**Plus > Ancien sens du clic molette** permet de retablir le comportement
+d'origine pour ceux qui le preferent. La camera ne se deplace pas lorsqu'un
+controle de panneau capture le pointeur.
+
+Les controles essentiels sont en tete : Edition/Conduite, Annuler/Retablir,
+**Enregistrer**, puis Generation, Sculpture, Objets et Scenes.
+**Diagnostics** se trouve dans Plus ; l'enregistrement rapide utilise
+la protection existante contre l'ecrasement d'un fichier homonyme.
+
+Dans l'onglet Objets, les gizmos, l'etat de la selection et les actions
+Dupliquer/Supprimer sont maintenant accessibles sans faire defiler tout le
+catalogue. La liste des objets poses, les vignettes d'assets et les compositions
+sont organisees en sections repliables. Les parametres techniques de
+placement (offset, dimensions precises), les reglages de grille et l'angle
+de magnetisme se trouvent sous **Options avancees**. Les valeurs de
+position/rotation/dimensions exactes, la forme du pinceau et le point de
+depart du vehicule sont egalement replies par defaut.
+
+La logique de sauvegarde JSON, la physique, les GLB et les regroupements
+de la PR 3 restent inchanges. Cette PR traite en priorite les retours
+d'ergonomie; elle ne cree ni nouveaux assets ni un nouveau systeme de terrain.
