@@ -1003,188 +1003,226 @@ fn objects(
     draft: &mut UiDraft,
     action: &mut Option<WorkshopAction>,
 ) {
+    ui.heading("Objets");
     ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut controls.tool, EditorTool::Place, "Placer");
         ui.selectable_value(&mut controls.tool, EditorTool::Select, "Selectionner");
+        ui.selectable_value(&mut controls.tool, EditorTool::Place, "Placer");
     });
-    if let Some(kind) = super::terrain_catalogue::catalogue(
-        ui, controls.object_kind, &mut draft.asset_query, &mut draft.asset_category,
-    ) {
-        controls.choose_kind(kind);
-    }
     ui.horizontal_wrapped(|ui| {
-        ui.label("Placement");
-        ui.selectable_value(&mut controls.placement_mode, PlacementMode::Single, "Unique");
-        ui.selectable_value(&mut controls.placement_mode, PlacementMode::Multiple, "Multiple");
-    });
-    ui.small("Choisissez un modele puis cliquez sur le terrain. Q/E tourne ; Echap annule.");
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut controls.placement_follow_ground, "Suivre le sol");
-        if !controls.placement_follow_ground {
-            ui.label("Libre : le modele peut traverser le sol");
+        ui.label("Gizmos");
+        for (mode, label) in [
+            (GizmoMode::Move, "G · Deplacer"),
+            (GizmoMode::Rotate, "R · Tourner"),
+            (GizmoMode::Scale, "S · Taille"),
+        ] {
+            if ui.selectable_label(controls.gizmo_mode == mode, label).clicked() {
+                controls.gizmo_mode = mode;
+                controls.tool = EditorTool::Select;
+            }
         }
     });
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Decalage vertical [m]");
-        ui.add(egui::DragValue::new(&mut controls.placement_offset_y)
-            .speed(0.1).range(-32.0..=32.0));
-    });
-    ui.separator();
-    ui.heading("Manipulation 3D de la selection");
-    ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Move, "G · Deplacer");
-        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Rotate, "R · Tourner");
-        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Scale, "S · Taille");
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut controls.snap_enabled, "Aimantation");
-        if controls.snap_enabled {
-            ui.checkbox(&mut controls.snap_objects, "Autres objets");
-        }
-        ui.checkbox(&mut controls.uniform_scale, "Taille uniforme");
-    });
-    if controls.snap_enabled {
+    let number = controls.selected_ids.len();
+    if number > 0 {
+        ui.strong(format!("{number} objet(s) selectionne(s)"));
         ui.horizontal_wrapped(|ui| {
-            ui.label("Pas grille [m]");
-            ui.add(egui::DragValue::new(&mut controls.snap_grid)
-                .speed(0.05).range(0.05..=5.0));
-            ui.label("Angle [°]");
-            ui.add(egui::DragValue::new(&mut controls.snap_angle)
-                .speed(1.0).range(1.0..=90.0));
-        });
-    }
-    ui.small("Sur une selection : G/R/S, glisser une poignee coloree, Shift = mouvement fin, Alt = aimantation temporairement desactivee, Echap = annuler.");
-    ui.separator();
-    vector_control(
-        ui,
-        "Dimensions de placement [m]",
-        &mut controls.object_size,
-        " m",
-    );
-    if !valid_size(controls.object_size) {
-        ui.colored_label(ui.visuals().error_fg_color, "Dimensions : 0.1 a 32 m");
-    }
-    let yaw = controls
-        .placement_yaws
-        .iter()
-        .find(|(kind, _)| *kind == controls.object_kind)
-        .map_or(0.0, |(_, yaw)| *yaw);
-    ui.label(format!("Lacet de placement : {yaw:.0} deg"));
-    ui.separator();
-    ui.strong(format!("Objets ({}) · {} selectionne(s)", obstacles.len(), controls.selected_ids.len()));
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Tout selectionner").clicked() {
-            controls.selected_ids = obstacles.iter().map(|o| o.id).collect();
-            controls.selected = controls.selected_ids.last().copied();
-            controls.tool = EditorTool::Select;
-        }
-        if ui.button("Deselectionner").clicked() {
-            controls.selected_ids.clear();
-            controls.selected = None;
-        }
-    });
-    egui::ScrollArea::vertical()
-        .id_salt("terrain_objects")
-        .max_height(170.0)
-        .show(ui, |ui| {
-            for object in obstacles {
-                let group = groups.iter().find(|g| g.members.contains(&object.id));
-                let label = match group {
-                    Some(g) => format!("#{} {} · {}", object.id, object.kind.name(), g.name),
-                    None => format!("#{} {}", object.id, object.kind.name()),
-                };
-                if ui.selectable_label(controls.selected_ids.contains(&object.id), label)
-                    .on_hover_text("Maj + clic : ajouter ou retirer de la selection")
-                    .clicked() {
-                    let members = expanded_selection(object.id, groups);
-                    let shift = ui.input(|i| i.modifiers.shift);
-                    if shift {
-                        let remove = members.iter().all(|id| controls.selected_ids.contains(id));
-                        if remove {
-                            controls.selected_ids.retain(|id| !members.contains(id));
-                        } else {
-                            for id in members {
-                                if !controls.selected_ids.contains(&id) {
-                                    controls.selected_ids.push(id);
-                                }
-                            }
-                        }
-                    } else {
-                        controls.selected_ids = members;
-                    }
-                    controls.selected = controls.selected_ids.last().copied();
-                    controls.tool = EditorTool::Select;
-                    if controls.selected_ids.len() == 1 {
-                        draft.object = Some(object.clone());
-                        draft.object_baseline = Some(object.clone());
-                    } else {
-                        draft.object = None;
-                        draft.object_baseline = None;
-                    }
+            if ui.button("Dupliquer").clicked() {
+                enqueue(action, WorkshopAction::DuplicateSelection);
+            }
+            if ui.button("Supprimer").clicked() {
+                enqueue(action, WorkshopAction::DeleteSelection);
+            }
+            if number == 1 && ui.button("Aligner au sol").clicked() {
+                if let Some(id) = controls.selected {
+                    enqueue(action, WorkshopAction::AlignObject(id));
                 }
             }
         });
-    ui.separator();
-    let number = controls.selected_ids.len();
-    if number > 1 {
-        ui.strong(format!("Ensemble de {number} objets"));
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Nom");
-            ui.add(egui::TextEdit::singleline(&mut draft.group_name)
-                .hint_text("Passage rocheux").desired_width(180.0));
-        });
-        let grouped = groups.iter().any(|g|
-            g.members.iter().any(|id| controls.selected_ids.contains(id)));
-        ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(!grouped && !draft.group_name.trim().is_empty(),
-                    egui::Button::new("Grouper")).clicked() {
-                enqueue(action, WorkshopAction::GroupSelection(draft.group_name.trim().to_owned()));
+        ui.small("Maj + clic : ajouter / retirer. Glisser une poignee X/Y/Z pour transformer.");
+        if number == 1 {
+            if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
+                egui::CollapsingHeader::new("Position, rotation et dimensions exactes")
+                    .default_open(false)
+                    .show(ui, |ui| object_transform(ui, object, baseline, action));
             }
-            if ui.add_enabled(grouped, egui::Button::new("Degrouper")).clicked() {
-                enqueue(action, WorkshopAction::UngroupSelection);
-            }
-            if ui.button("Dupliquer l'ensemble").clicked() {
-                enqueue(action, WorkshopAction::DuplicateSelection);
-            }
-            if ui.button("Supprimer l'ensemble").clicked() {
-                enqueue(action, WorkshopAction::DeleteSelection);
-            }
-        });
-        ui.small("Les gizmos G/R/S agissent sur tout l'ensemble autour de son centre, sans fusionner les meshes.");
-    } else if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
-        object_transform(ui, object, baseline, action);
+        } else {
+            ui.small("Les gizmos deplacent et tournent l'ensemble autour de son centre.");
+        }
+    } else {
+        ui.small("Choisissez un objet dans le terrain, dans la liste ou dans le catalogue.");
     }
     ui.separator();
-    ui.heading("Mes compositions");
-    ui.small("Construisez un ensemble, puis sauvegardez-le pour le reposer sur une autre map.");
-    ui.horizontal_wrapped(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut draft.composition_name)
-            .hint_text("Bivouac forestier").desired_width(180.0));
-        if ui.add_enabled((2..=64).contains(&number) && !draft.composition_name.trim().is_empty(),
-                egui::Button::new("Enregistrer la composition")).clicked() {
-            enqueue(action, WorkshopAction::SaveComposition(draft.composition_name.trim().to_owned()));
-        }
-        if ui.button("Actualiser").clicked() {
-            enqueue(action, WorkshopAction::RefreshCompositions);
-        }
-    });
-    for name in compositions {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(name);
-            if ui.button(format!("Inserer##{name}"))
-                .on_hover_text("Placer l'assemblage pres du curseur ; sinon au depart du joueur")
-                .clicked() {
-                let origin = controls.cursor.unwrap_or(Vec3::from_array(spawn.position));
-                enqueue(action, WorkshopAction::InsertComposition(name.clone(), origin.to_array()));
+
+    egui::CollapsingHeader::new(format!("Objets places ({})", obstacles.len()))
+        .id_salt("placed_objects_docked")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Tout selectionner").clicked() {
+                    controls.selected_ids = obstacles.iter().map(|o| o.id).collect();
+                    controls.selected = controls.selected_ids.last().copied();
+                    controls.tool = EditorTool::Select;
+                }
+                if ui.button("Deselectionner").clicked() {
+                    controls.selected_ids.clear();
+                    controls.selected = None;
+                }
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("terrain_objects")
+                .max_height(190.0)
+                .show(ui, |ui| {
+                    for object in obstacles {
+                        let group = groups.iter().find(|g| g.members.contains(&object.id));
+                        let label = match group {
+                            Some(g) => format!("#{} {} · {}", object.id, object.kind.name(), g.name),
+                            None => format!("#{} {}", object.id, object.kind.name()),
+                        };
+                        if ui.selectable_label(controls.selected_ids.contains(&object.id), label)
+                            .on_hover_text("Maj + clic pour modifier la selection")
+                            .clicked() {
+                            let members = expanded_selection(object.id, groups);
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            if shift {
+                                let remove = members.iter().all(|id| controls.selected_ids.contains(id));
+                                if remove {
+                                    controls.selected_ids.retain(|id| !members.contains(id));
+                                } else {
+                                    for id in members {
+                                        if !controls.selected_ids.contains(&id) {
+                                            controls.selected_ids.push(id);
+                                        }
+                                    }
+                                }
+                            } else {
+                                controls.selected_ids = members;
+                            }
+                            controls.selected = controls.selected_ids.last().copied();
+                            controls.tool = EditorTool::Select;
+                            if controls.selected_ids.len() == 1 {
+                                draft.object = Some(object.clone());
+                                draft.object_baseline = Some(object.clone());
+                            } else {
+                                draft.object = None;
+                                draft.object_baseline = None;
+                            }
+                        }
+                    }
+                });
+        });
+
+    egui::CollapsingHeader::new("Ajouter un asset")
+        .id_salt("add_asset_docked")
+        .default_open(true)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("asset_gallery_docked")
+                .max_height(235.0)
+                .show(ui, |ui| {
+                    if let Some(kind) = super::terrain_catalogue::catalogue(
+                        ui, controls.object_kind, &mut draft.asset_query, &mut draft.asset_category,
+                    ) {
+                        controls.choose_kind(kind);
+                    }
+                });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Placement");
+                ui.selectable_value(&mut controls.placement_mode, PlacementMode::Single, "Unique");
+                ui.selectable_value(&mut controls.placement_mode, PlacementMode::Multiple, "Multiple");
+            });
+            ui.small("Choisir un asset, cliquer sur le terrain · Q/E : tourner · Echap : quitter.");
+            egui::CollapsingHeader::new("Options avancees de placement")
+                .id_salt("advanced_placement_docked")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.checkbox(&mut controls.placement_follow_ground, "Suivre le terrain");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Decalage vertical [m]");
+                        ui.add(egui::DragValue::new(&mut controls.placement_offset_y)
+                            .speed(0.1).range(-32.0..=32.0));
+                    });
+                    vector_control(ui, "Dimensions de placement [m]", &mut controls.object_size, " m");
+                    if !valid_size(controls.object_size) {
+                        ui.colored_label(ui.visuals().error_fg_color, "Dimensions : 0.1 a 32 m");
+                    }
+                    let yaw = controls.placement_yaws.iter()
+                        .find(|(kind, _)| *kind == controls.object_kind)
+                        .map_or(0.0, |(_, yaw)| *yaw);
+                    ui.label(format!("Angle de pose : {yaw:.0}°"));
+                });
+        });
+
+    egui::CollapsingHeader::new("Reglages avances des gizmos")
+        .id_salt("advanced_gizmo_docked")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.checkbox(&mut controls.snap_enabled, "Activer le magnetisme");
+            ui.checkbox(&mut controls.uniform_scale, "Redimensionnement uniforme");
+            if controls.snap_enabled {
+                ui.checkbox(&mut controls.snap_objects, "Aligner sur les autres objets");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Grille [m]");
+                    ui.add(egui::DragValue::new(&mut controls.snap_grid)
+                        .speed(0.05).range(0.05..=5.0));
+                    ui.label("Angle [°]");
+                    ui.add(egui::DragValue::new(&mut controls.snap_angle)
+                        .speed(1.0).range(1.0..=90.0));
+                });
+            }
+            ui.small("Maj : mouvement fin · Alt : desactiver l'aimantation temporairement · Echap : annuler.");
+        });
+    ui.separator();
+
+    egui::CollapsingHeader::new("Groupes et compositions")
+        .id_salt("compositions_docked")
+        .default_open(false)
+        .show(ui, |ui| {
+            if number > 1 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Nom du groupe");
+                    ui.add(egui::TextEdit::singleline(&mut draft.group_name)
+                        .hint_text("Passage rocheux").desired_width(155.0));
+                });
+                let grouped = groups.iter().any(|g|
+                    g.members.iter().any(|id| controls.selected_ids.contains(id)));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!grouped && !draft.group_name.trim().is_empty(),
+                            egui::Button::new("Grouper")).clicked() {
+                        enqueue(action, WorkshopAction::GroupSelection(draft.group_name.trim().to_owned()));
+                    }
+                    if ui.add_enabled(grouped, egui::Button::new("Degrouper")).clicked() {
+                        enqueue(action, WorkshopAction::UngroupSelection);
+                    }
+                });
+            }
+            ui.strong("Mes compositions");
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut draft.composition_name)
+                    .hint_text("Bivouac").desired_width(148.0));
+                if ui.add_enabled((2..=64).contains(&number) && !draft.composition_name.trim().is_empty(),
+                    egui::Button::new("Enregistrer")).clicked() {
+                    enqueue(action, WorkshopAction::SaveComposition(draft.composition_name.trim().to_owned()));
+                }
+                if ui.small_button("↻").on_hover_text("Actualiser les compositions").clicked() {
+                    enqueue(action, WorkshopAction::RefreshCompositions);
+                }
+            });
+            for name in compositions {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(name);
+                    if ui.button(format!("Inserer##{name}"))
+                        .on_hover_text("Inserer au curseur ou pres du depart")
+                        .clicked() {
+                        let origin = controls.cursor.unwrap_or(Vec3::from_array(spawn.position));
+                        enqueue(action, WorkshopAction::InsertComposition(name.clone(), origin.to_array()));
+                    }
+                });
+            }
+            if compositions.is_empty() {
+                ui.small("Selectionnez au moins deux objets puis enregistrez une composition.");
             }
         });
-    }
-    if compositions.is_empty() {
-        ui.small("Aucune composition. Selectionnez au moins deux objets pour commencer.");
-    }
     cursor_label(ui, controls.cursor);
 }
-
 fn object_transform(
     ui: &mut egui::Ui,
     object: &mut Obstacle,
