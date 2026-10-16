@@ -1012,9 +1012,10 @@ fn editor_camera(
             orbit.pitch = (orbit.pitch + motion.delta.y * 0.006).clamp(0.15, 1.48);
         }
         if mouse.pressed(MouseButton::Middle) {
-            orbit.focus += editor_pan_delta(
+            let pan = editor_pan_delta(
                 orbit.yaw, orbit.distance, motion.delta, state.legacy_pan_direction,
             );
+            orbit.focus += pan;
         }
         let lines = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
