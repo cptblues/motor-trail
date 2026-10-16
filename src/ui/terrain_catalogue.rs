@@ -113,11 +113,11 @@ fn build_thumbnail(kind: ObstacleKind) -> Thumbnail {
         max: [f32::NEG_INFINITY; 2],
     };
     for triangle in indices.chunks_exact(3) {
-        let Some((a, b, c)) = vertices
-            .get(triangle[0])
-            .zip(vertices.get(triangle[1]))
-            .zip(vertices.get(triangle[2]))
-        else {
+        let (Some(a), Some(b), Some(c)) = (
+            vertices.get(triangle[0]),
+            vertices.get(triangle[1]),
+            vertices.get(triangle[2]),
+        ) else {
             continue;
         };
         let positions = [Vec3::from_array(*a), Vec3::from_array(*b), Vec3::from_array(*c)];
