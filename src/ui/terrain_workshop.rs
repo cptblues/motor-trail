@@ -497,22 +497,12 @@ fn show_workshop(
                         if wide {
                             ui.label(egui::RichText::new("● CRÉATION")
                                 .strong().color(active));
-                            for (tab, glyph, label) in [
-                                (WorkshopTab::Generation, BuilderGlyph::Terrain, "Terrain"),
-                                (WorkshopTab::Sculpture, BuilderGlyph::Sculpt, "Sculpter"),
-                                (WorkshopTab::Objects, BuilderGlyph::Objects, "Objets"),
-                                (WorkshopTab::Scenes, BuilderGlyph::Scenes, "Scènes"),
-                            ] {
-                                if builder_icon_button(ui, glyph, label,
-                                    draft.tab == tab, 94.0).clicked() {
-                                    draft.tab = tab;
-                                    if tab == WorkshopTab::Objects {
-                                        controls.tool = EditorTool::Select;
-                                    } else if tab == WorkshopTab::Sculpture {
-                                        controls.tool = EditorTool::Sculpt;
-                                    }
-                                }
-                            }
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("Outil : {}", draft.tab.label()))
+                                .color(egui::Color32::LIGHT_GRAY));
+                            ui.separator();
+                            ui.label(egui::RichText::new(view.scene_name)
+                                .small().color(egui::Color32::LIGHT_GRAY));
                         } else {
                             ui.label(egui::RichText::new("● CRÉER").color(active));
                         }
