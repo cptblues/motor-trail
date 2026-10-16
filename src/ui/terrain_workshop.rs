@@ -524,10 +524,13 @@ fn show_workshop(
                         scene_files(
                             ui, &mut controls, &files, view.file, &mut draft, &mut action,
                         );
-                        ui.separator();
-                        spawn_controls(
-                            ui, &controls, &mut draft, view.ground_height, &mut action,
-                        );
+                        egui::CollapsingHeader::new("Avance : point de depart du vehicule")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                spawn_controls(
+                                    ui, &controls, &mut draft, view.ground_height, &mut action,
+                                );
+                            });
                     }
                     WorkshopTab::Diagnostic => diagnostics(ui, view),
                 }
