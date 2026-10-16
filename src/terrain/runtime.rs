@@ -2143,9 +2143,32 @@ mod tests {
     }
 
     #[test]
+    fn one_click_places_and_selects_in_single_mode() {
+        let mut app = placement_app();
+        assert_eq!(
+            app.world().resource::<TerrainWorkshopState>().placement_mode,
+            PlacementMode::Single,
+        );
+        placement_tick(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        let state = app.world().resource::<TerrainWorkshopState>();
+        assert_eq!(state.tool, EditorTool::Select);
+        assert_eq!(state.selected, Some(1));
+        assert_eq!(
+            app.world().resource::<ActiveTerrain>().scene.obstacles.len(), 1,
+        );
+        assert!(preview_entity(&mut app).is_none());
+    }
+
+    #[test]
     fn placement_preview_matches_catalog_geometry_and_exact_committed_pose() {
         for kind in ObstacleKind::catalogue() {
             let mut app = placement_app();
+            app.world_mut().resource_mut::<TerrainWorkshopState>().placement_mode =
+                PlacementMode::Multiple;
             app.world_mut()
                 .resource_mut::<TerrainWorkshopState>()
                 .object_kind = kind;
@@ -2644,6 +2667,8 @@ mod tests {
     #[test]
     fn placement_preview_aligns_to_slopes_and_confirmation_uses_the_fresh_pick() {
         let mut app = placement_app();
+        app.world_mut().resource_mut::<TerrainWorkshopState>().placement_mode =
+            PlacementMode::Multiple;
         {
             let mut active = app.world_mut().resource_mut::<ActiveTerrain>();
             let terrain = &mut active.scene.terrain;
