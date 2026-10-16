@@ -103,6 +103,9 @@ pub struct TerrainWorkshopState {
     pub snap_grid: f32,
     pub snap_angle: f32,
     pub uniform_scale: bool,
+    /// Reverse the legacy middle-button pan direction. Defaults to the new
+    /// screen-aligned direction; users can restore the previous behavior.
+    pub legacy_pan_direction: bool,
     placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
     pub selected_ids: Vec<u64>,
@@ -135,6 +138,7 @@ impl Default for TerrainWorkshopState {
             snap_grid: 0.5,
             snap_angle: 15.0,
             uniform_scale: false,
+            legacy_pan_direction: false,
             placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
             selected_ids: Vec::new(),
@@ -785,6 +789,14 @@ fn editor_interaction(
     ) {
         return;
     }
+    // Space + left drag is a camera gesture, never a sculpt, placement,
+    // selection or gizmo gesture. Captured egui text fields take precedence.
+    if focused && !capture.pointer && !capture.keyboard
+        && keys.pressed(KeyCode::Space) && mouse.pressed(MouseButton::Left)
+    {
+        finish_stroke(&mut gesture, &mut active);
+        return;
+    }
     if state.mode == WorkshopMode::Edit && focused && state.tool == EditorTool::Place {
         state.cursor = None;
         let escape = !capture.keyboard && keys.just_pressed(KeyCode::Escape);
@@ -927,6 +939,7 @@ fn unoccluded_hit(object: Option<(Entity, f32)>, ground: Option<(Entity, f32)>) 
 fn apply_stroke(
     time: Res<Time<Fixed>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     capture: Res<UiInputCapture>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut state: ResMut<TerrainWorkshopState>,
@@ -938,6 +951,7 @@ fn apply_stroke(
         && gesture.active
         && state.tool == EditorTool::Sculpt
         && mouse.pressed(MouseButton::Left)
+        && !keys.pressed(KeyCode::Space)
         && !mouse.pressed(MouseButton::Right)
         && !mouse.pressed(MouseButton::Middle)
         && !capture.pointer
@@ -977,8 +991,25 @@ fn apply_stroke(
     }
 }
 
+/// Pan as if grabbing the terrain: the scene follows the pointer in BOTH
+/// screen axes. Camera screen-right is -right at yaw=0 because the camera
+/// sits at negative Z and looks toward positive Z. The camera's horizontal
+/// screen-up is +forward, hence focus translation is +right/+forward.
+/// Do not globally negate both axes (that caused the reversed feel).
+fn editor_pan_delta(yaw: f32, distance: f32, mouse_delta: Vec2, legacy: bool) -> Vec3 {
+    let right = Vec3::new(yaw.cos(), 0.0, -yaw.sin());
+    let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+    let direction = if legacy {
+        -right * mouse_delta.x + forward * mouse_delta.y
+    } else {
+        right * mouse_delta.x + forward * mouse_delta.y
+    };
+    direction * distance * 0.0015
+}
+
 fn editor_camera(
     state: Res<TerrainWorkshopState>,
+    keys: Res<ButtonInput<KeyCode>>,
     manipulation: Res<GizmoGesture>,
     capture: Res<UiInputCapture>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -997,11 +1028,14 @@ fn editor_camera(
             orbit.yaw -= motion.delta.x * 0.006;
             orbit.pitch = (orbit.pitch + motion.delta.y * 0.006).clamp(0.15, 1.48);
         }
-        if mouse.pressed(MouseButton::Middle) {
-            let right = Vec3::new(orbit.yaw.cos(), 0.0, -orbit.yaw.sin());
-            let forward = Vec3::new(orbit.yaw.sin(), 0.0, orbit.yaw.cos());
-            let distance = orbit.distance;
-            orbit.focus += (-right * motion.delta.x + forward * motion.delta.y) * distance * 0.0015;
+        if mouse.pressed(MouseButton::Middle)
+            || (!capture.keyboard && keys.pressed(KeyCode::Space)
+                && mouse.pressed(MouseButton::Left))
+        {
+            let pan = editor_pan_delta(
+                orbit.yaw, orbit.distance, motion.delta, state.legacy_pan_direction,
+            );
+            orbit.focus += pan;
         }
         let lines = match scroll.unit {
             MouseScrollUnit::Line => scroll.delta.y,
@@ -1702,6 +1736,25 @@ mod tests {
         assert_eq!(state.selection(), vec![3]);
         state.pick_selection(None, false, &groups);
         assert!(state.selection().is_empty());
+    }
+
+    #[test]
+    fn camera_middle_drag_direction_is_screen_aligned_and_legacy_is_optional() {
+        let yaw = 0.0;
+        let drag_right = editor_pan_delta(yaw, 25.0, Vec2::X * 30.0, false);
+        let drag_down = editor_pan_delta(yaw, 25.0, Vec2::Y * 30.0, false);
+        assert!(drag_right.x > 0.0);
+        assert!(drag_down.z > 0.0, "dragging down must move the scenery down");
+        let old = editor_pan_delta(yaw, 25.0, Vec2::new(30.0, 10.0), true);
+        let new = editor_pan_delta(yaw, 25.0, Vec2::new(30.0, 10.0), false);
+        assert_eq!(old.z, new.z, "legacy only restores the original horizontal direction");
+        assert_eq!(old.x, -new.x);
+        let yaw_90 = editor_pan_delta(std::f32::consts::FRAC_PI_2,
+            25.0, Vec2::X * 30.0, false);
+        assert!(yaw_90.z < 0.0, "horizontal screen drag must track orbit angle");
+        assert_eq!(editor_pan_delta(yaw, 25.0, Vec2::ZERO, false), Vec3::ZERO);
+        assert_eq!(editor_pan_delta(yaw, 25.0, Vec2::X, false).y, 0.0);
+        assert!(!TerrainWorkshopState::default().legacy_pan_direction);
     }
 
     #[test]
@@ -2434,6 +2487,22 @@ mod tests {
         let (mut local, mut global) = cameras.single_mut(app.world_mut()).unwrap();
         *local = pose;
         *global = GlobalTransform::from(pose);
+    }
+
+    #[test]
+    fn space_left_drag_is_reserved_for_camera_and_never_places_an_asset() {
+        let mut app = placement_app();
+        placement_tick(&mut app);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.world_mut().resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        placement_tick(&mut app);
+        let state = app.world().resource::<TerrainWorkshopState>();
+        assert_eq!(state.tool, EditorTool::Place,
+            "space-drag must not exit placement mode");
+        assert!(app.world().resource::<ActiveTerrain>().scene.obstacles.is_empty(),
+            "a camera drag must not place an obstacle");
     }
 
     #[test]

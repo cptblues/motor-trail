@@ -415,3 +415,118 @@ partagees restent independantes de la bibliotheque personnelle.
 des lignes nommees plutot que des apercus 3D. L'insertion s'effectue
 au curseur par bouton, sans ghost multi-objets avant confirmation.
 Ces points peuvent etre ameliores dans la PR 4.
+
+## Editor V2 — Panneau ancre et navigation simplifiee (PR 4)
+
+L'atelier n'est plus une fenetre flottante devant le relief :
+- Sur les ecrans larges (880 points logiques ou plus), il est ancre a droite
+  et redimensionnable en largeur, en laissant le terrain accessible.
+- Sur les ecrans plus etroits, il est automatiquement ancre en bas, avec une
+  hauteur ajustable. Le menu **Plus** permet de choisir Automatique, A droite
+  ou En bas. La disposition forcee a droite repasse en bas si l'ecran devient
+  trop etroit pour etre utilisable.
+- **Masquer [T]** et le raccourci **T** liberent totalement le terrain sans
+  effacer la scene ou la selection.
+
+La navigation dans l'editeur conserve clic droit pour orienter la camera
+et la molette pour zoomer. Le **clic molette glisse** a maintenant un sens
+inverse de l'ancien, conforme au retour utilisateur. L'option
+**Plus > Ancien sens du clic molette** permet de retablir le comportement
+d'origine pour ceux qui le preferent. La camera ne se deplace pas lorsqu'un
+controle de panneau capture le pointeur.
+
+Les controles essentiels sont en tete : Edition/Conduite, Annuler/Retablir,
+**Enregistrer**, puis Generation, Sculpture, Objets et Scenes.
+**Diagnostics** se trouve dans Plus ; l'enregistrement rapide utilise
+la protection existante contre l'ecrasement d'un fichier homonyme.
+
+Dans l'onglet Objets, les gizmos, l'etat de la selection et les actions
+Dupliquer/Supprimer sont maintenant accessibles sans faire defiler tout le
+catalogue. La liste des objets poses, les vignettes d'assets et les compositions
+sont organisees en sections repliables. Les parametres techniques de
+placement (offset, dimensions precises), les reglages de grille et l'angle
+de magnetisme se trouvent sous **Options avancees**. Les valeurs de
+position/rotation/dimensions exactes, la forme du pinceau et le point de
+depart du vehicule sont egalement replies par defaut.
+
+La logique de sauvegarde JSON, la physique, les GLB et les regroupements
+de la PR 3 restent inchanges. Cette PR traite en priorite les retours
+d'ergonomie; elle ne cree ni nouveaux assets ni un nouveau systeme de terrain.
+
+
+## Editor V3 — Atelier de construction (PR #10)
+
+Premiere livraison de la refonte « jeu de construction/gestion », sans nouveaux
+assets ni systemes fictifs. En **creation**, la barre superieure identifie
+le mode, l'outil actif, le nom de scene, les actions Annuler/Retablir,
+Sauvegarder et Tester. La navigation Terrain/Sculpter/Objets/Scenes se fait
+**uniquement a gauche** (ou dans l'atelier du bas en format compact)
+pour eviter deux menus redondants. Le menu « ⋯ » contient les
+diagnostics, la vue compacte et les options de navigation.
+
+Lorsque la fenetre fait au moins **1000 points logiques de large**, l'atelier
+reserve quatre zones autour de la scene 3D, sans superposer une fenetre
+flottante au paysage :
+
+- **En haut :** commandes globales, Undo/Redo, sauvegarde, conduite.
+- **A gauche :** barre courte d'outils pour changer de contexte.
+- **A droite :** inspecteur scrollable, outils adaptes au contexte, valeurs
+  des transformations des objets selectionnes, groupes/compositions et
+  reglages avances replies.
+- **En bas, uniquement dans Objets :** galerie horizontale d'assets, utilisant les
+  28 miniatures issues des meshes GLB et primitives deja embarques.
+  Recherche et categories, pose unique ou multiple.
+
+En dessous de 1000 points logiques, un bandeau superieur et un atelier
+inferieur remplacent les colonnes pour ne pas ecraser la vue 3D. La capture
+de pointeur couvre **toutes** les zones de panneaux, y compris quand egui
+les rend dans sa couche Background : defiler, cliquer et redimensionner un
+panneau ne doit pas sculpter, poser d'objet ou deplacer la camera.
+
+### Navigation de la camera en edition
+
+- **Clic droit maintenu :** orienter la camera.
+- **Clic molette maintenu :** deplacer la vue comme si on saisissait
+  le terrain, dans le **meme sens visuel** que le geste de souris
+  (horizontalement et verticalement, quel que soit le yaw).
+- **Espace + clic gauche maintenu :** meme panoramique, sans
+  selectionner, placer un asset, sculpter ni declencher un gizmo.
+- **Molette defilante :** zoomer/dezoomer.
+- **T :** masquer/afficher l'editeur.
+
+La preference « Panoramique historique » dans le menu ⋯ restaure
+l'ancienne orientation du glissement **horizontal**. Le champ de texte
+actif, les pop-ups egui et les interactions dans les panneaux conservent
+la priorite sur les raccourcis de la scene.
+
+### Périmètre et suite
+
+Ce changement recompose l'interface existante sans version de sauvegarde
+supplementaire, ni modification des colliders, GLB, seeds ou performances
+du terrain. La maquette de reference montre egalement des outils Routes,
+Defis, Ponts et Peindre : ils ne sont pas introduits ici car ils requierent
+leurs propres systemes, UX et validations. Les aspects artistiques precis
+(typographies, icones finales) et les miniatures des groupes feront partie
+d'une passe complementaire de design. Les icones vectorielles des outils et
+actions courantes ont deja ete ajoutees.
+
+### Mise au point ergonomique : modes, icones et catalogue redimensionnable
+
+- Le mode **Creation** s'identifie par son repere vert et son bouton
+  **Tester**. La conduite est un espace distinct : les rails, l'inspecteur et
+  la bibliotheque disparaissent. Un bandeau ambre **MODE CONDUITE** reste
+  visible et propose **Retour a la creation**. Le test conserve la camera et
+  la physique du vehicule existantes ; aucune edition n'est possible tant
+  que la conduite est active.
+- Les categories Terrain, Sculpter, Objets, Scenes ainsi que les commandes
+  de sauvegarde, test et objets disposent de pictogrammes vectoriels dessines
+  directement par egui. Aucune fonte ou ressource supplementaire n'est
+  requise pour les archives Windows/macOS.
+- La bibliotheque basse s'affiche **uniquement dans Objets** sur grand ecran.
+  Les boutons **1 objet / En serie** et les raccourcis de pose sont au-dessus
+  de la galerie ; ils restent accessibles en permanence. Le redimensionnement
+  respecte une hauteur minimale calculée qui empeche les controles de sortie
+  de zone. En mode Terrain/Sculpter/Scenes, la vue 3D retrouve la place basse.
+- Sous 1000 points logiques, le bandeau utilise des actions de creation et de
+  test compactes ; les onglets restent visibles au-dessus de l'inspecteur
+  inferieur, sans deverser toute la navigation sur plusieurs lignes.

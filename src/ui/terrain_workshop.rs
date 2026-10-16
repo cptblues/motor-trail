@@ -15,9 +15,19 @@ use crate::terrain::scene::{ReferenceScene, VehicleSpawn};
 /// The parent installs egui, initializes terrain resources and owns input capture.
 pub struct TerrainWorkshopPlugin;
 
+/// Last known screen area occupied by the editor; the input capture runs
+/// before egui has laid out this frame, so it reuses these previous bounds.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct WorkshopDockBounds {
+    /// Top command bar, left tools, right inspector, bottom asset shelf.
+    /// Previous-frame rectangles are consulted by PreUpdate mouse capture.
+    pub rects: [Option<egui::Rect>; 4],
+}
+
 impl Plugin for TerrainWorkshopPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(EguiPrimaryContextPass, terrain_workshop_ui);
+        app.init_resource::<WorkshopDockBounds>()
+            .add_systems(EguiPrimaryContextPass, terrain_workshop_ui);
     }
 }
 
@@ -32,6 +42,9 @@ enum WorkshopTab {
 }
 
 impl WorkshopTab {
+    const MAIN: [Self; 4] = [
+        Self::Generation, Self::Sculpture, Self::Objects, Self::Scenes,
+    ];
     const ALL: [Self; 5] = [
         Self::Generation,
         Self::Sculpture,
@@ -114,6 +127,24 @@ impl SpawnDraft {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum EditorDock {
+    #[default]
+    Auto,
+    Right,
+    Bottom,
+}
+
+impl EditorDock {
+    fn is_right(self, width: f32) -> bool {
+        match self {
+            Self::Auto => width >= 880.0,
+            Self::Right => width >= 560.0,
+            Self::Bottom => false,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct UiDraft {
     tab: WorkshopTab,
@@ -128,6 +159,7 @@ struct UiDraft {
     quick_relief: Option<u8>,
     group_name: String,
     composition_name: String,
+    dock: EditorDock,
 }
 
 /// Only editable controls are copied. Files, heightmaps and object lists stay borrowed.
@@ -149,6 +181,7 @@ struct Controls {
     snap_grid: f32,
     snap_angle: f32,
     uniform_scale: bool,
+    legacy_pan_direction: bool,
     placement_yaws: Vec<(ObstacleKind, f32)>,
     selected: Option<u64>,
     selected_ids: Vec<u64>,
@@ -187,6 +220,7 @@ impl Controls {
             snap_grid: state.snap_grid,
             snap_angle: state.snap_angle,
             uniform_scale: state.uniform_scale,
+            legacy_pan_direction: state.legacy_pan_direction,
             placement_yaws: ObstacleKind::catalogue()
                 .map(|kind| (kind, state.placement_yaw_degrees(kind)))
                 .collect(),
@@ -212,6 +246,7 @@ struct WorkshopUi {
     draft: UiDraft,
     snapshot: Option<FrameSnapshot>,
     committed_frame: Option<u64>,
+    bounds: [Option<egui::Rect>; 4],
 }
 
 impl WorkshopUi {
@@ -296,6 +331,7 @@ impl WorkshopUi {
         state.snap_grid = controls.snap_grid.clamp(0.05, 5.0);
         state.snap_angle = controls.snap_angle.clamp(1.0, 90.0);
         state.uniform_scale = controls.uniform_scale;
+        state.legacy_pan_direction = controls.legacy_pan_direction;
         state.selected = controls.selected;
         state.selected_ids = controls.selected_ids.clone();
         state.scene_name.clone_from(&controls.scene_name);
@@ -334,9 +370,11 @@ fn terrain_workshop_ui(
     mut state: ResMut<TerrainWorkshopState>,
     active: Res<ActiveTerrain>,
     manipulation: Res<crate::terrain::runtime::GizmoGesture>,
+    mut dock: ResMut<WorkshopDockBounds>,
     mut local: Local<WorkshopUi>,
 ) -> Result {
     if !state.open {
+        dock.rects = [None; 4];
         return Ok(());
     }
     let terrain = &active.scene.terrain;
@@ -365,6 +403,7 @@ fn terrain_workshop_ui(
         preview_object: manipulation.candidate.as_ref(),
     };
     show_workshop(contexts.ctx_mut()?, &mut state, &view, &mut local);
+    dock.rects = if state.open { local.bounds } else { [None; 4] };
     Ok(())
 }
 
@@ -375,13 +414,11 @@ fn show_workshop(
     local: &mut WorkshopUi,
 ) -> Option<egui::Rect> {
     if !state.open {
+        local.bounds = [None; 4];
         return None;
     }
-    if local
-        .snapshot
-        .as_ref()
-        .is_none_or(|snapshot| snapshot.frame != ctx.cumulative_frame_nr())
-    {
+    if local.snapshot.as_ref().is_none_or(|snapshot|
+        snapshot.frame != ctx.cumulative_frame_nr()) {
         local.sync_selection(state, view);
     }
     let (mut controls, mut draft) = local.begin_frame(ctx, state);
@@ -393,79 +430,432 @@ fn show_workshop(
     let mut action = None;
     let mut open = controls.open;
     let screen = ctx.content_rect();
-    let maximum = (screen.size() - egui::vec2(16.0, 16.0)).max(egui::vec2(1.0, 1.0));
-    let width = 560.0_f32.min(maximum.x);
-    let result = egui::Window::new("Motor Trail | Terrain [T]")
-        .id(egui::Id::new("motor_trail_terrain_workshop"))
-        .open(&mut open)
-        .movable(true)
-        .resizable(true)
-        .collapsible(false)
-        .constrain_to(screen)
-        .default_pos(egui::pos2(
-            (screen.right() - width - 24.0).max(screen.left()),
-            screen.top() + 76.0,
-        ))
-        .default_size(egui::vec2(width, 650.0_f32.min(maximum.y)))
-        .min_size(egui::vec2(
-            280.0_f32.min(maximum.x),
-            180.0_f32.min(maximum.y),
-        ))
-        .max_size(maximum)
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
-            let _ = toolbar(ui, &controls, view.undo, view.redo, &mut action);
-            if !state.status.is_empty() {
-                ui.label(&state.status);
-            }
-            if let Some(error) = &state.last_error {
-                ui.colored_label(ui.visuals().error_fg_color, error);
-            }
-            ui.horizontal_wrapped(|ui| {
-                for tab in WorkshopTab::ALL {
-                    ui.selectable_value(&mut draft.tab, tab, tab.label());
-                }
-            });
-            ui.separator();
-            egui::ScrollArea::both()
-                .id_salt(("terrain_workshop_body", draft.tab as u8))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    match draft.tab {
-                        WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
-                        WorkshopTab::Sculpture => sculpture(ui, &mut controls),
-                        WorkshopTab::Objects => {
-                            objects(ui, &mut controls, view.obstacles, view.groups, view.compositions, view.spawn, &mut draft, &mut action)
-                        }
-                        WorkshopTab::Scenes => {
-                            scene_files(
-                                ui,
-                                &mut controls,
-                                &state.files,
-                                view.file,
-                                &mut draft,
-                                &mut action,
-                            );
+    // The egui 0.36 Panel API consumes a root Ui. Reuse ONE root so each
+    // panel subtracts its space: the terrain viewport remains unobstructed.
+    let mut root = egui::Ui::new(
+        ctx.clone(),
+        "motor_trail_builder_root".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+    let wide = screen.width() >= 1000.0 && draft.dock.is_right(screen.width());
+    let files = state.files.clone();
+    let status = state.status.clone();
+    let error = state.last_error.clone();
+    let background = egui::Color32::from_rgb(25, 36, 47);
+    let active = egui::Color32::from_rgb(98, 226, 155);
+    let mut bounds = [None; 4];
+
+    // Distinct play-test workspace. Do not show the edit rails/shelf or
+    // inspectors while driving: only an unmistakable way back to creation.
+    if controls.mode == WorkshopMode::Drive {
+        bounds[0] = Some(egui::Panel::top("motor_trail_drive_status")
+            .resizable(false)
+            .default_size(54.0)
+            .show(&mut root, |ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(42, 49, 42))
+                    .inner_margin(egui::Margin::same(9))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("● MODE CONDUITE")
+                                .strong().color(egui::Color32::from_rgb(244, 208, 125))
+                                .size(15.0));
                             ui.separator();
-                            spawn_controls(
-                                ui,
-                                &controls,
-                                &mut draft,
-                                view.ground_height,
-                                &mut action,
-                            );
-                        }
-                        WorkshopTab::Diagnostic => diagnostics(ui, view),
-                    }
-                    if draft.confirmation.is_some() {
+                            if builder_icon_button(ui, BuilderGlyph::Edit,
+                                if wide { "RETOUR À LA CRÉATION" } else { "CRÉER" },
+                                true, if wide { 235.0 } else { 109.0 }).clicked() {
+                                enqueue(&mut action, WorkshopAction::SetMode(WorkshopMode::Edit));
+                            }
+                            if wide {
+                                ui.label("Test du parcours · physique du véhicule active");
+                            }
+                            if ui.small_button("Masquer [T]").clicked() { open = false; }
+                        });
+                    });
+            }).response.rect);
+        local.bounds = bounds;
+        controls.open = open;
+        local.commit(ctx, state, &mut controls, &mut draft, action);
+        return bounds[0];
+    }
+
+    // Command bar: only existing, working gameplay/editor modes are shown.
+    bounds[0] = Some(egui::Panel::top("motor_trail_builder_commands")
+        .resizable(false)
+        .default_size(55.0)
+        .show(&mut root, |ui| {
+            ui.visuals_mut().panel_fill = background;
+            egui::Frame::new().fill(background)
+                .inner_margin(egui::Margin::same(8))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("MOTOR TRAIL")
+                            .size(if wide { 18.0 } else { 14.0 }).strong().color(active));
                         ui.separator();
-                        confirmation_controls(ui, &mut draft, &mut action);
-                    }
+                        if wide {
+                            ui.label(egui::RichText::new("● CRÉATION")
+                                .strong().color(active));
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("Outil : {}", draft.tab.label()))
+                                .color(egui::Color32::LIGHT_GRAY));
+                            ui.separator();
+                            ui.label(egui::RichText::new(view.scene_name)
+                                .small().color(egui::Color32::LIGHT_GRAY));
+                        } else {
+                            ui.label(egui::RichText::new("● CRÉER").color(active));
+                        }
+                        if wide {
+                            ui.separator();
+                            let undo_button = history_icon_button(ui, view.undo > 0, false);
+                            if undo_button.clicked() { enqueue(&mut action, WorkshopAction::Undo); }
+                            let redo_button = history_icon_button(ui, view.redo > 0, true);
+                            if redo_button.clicked() { enqueue(&mut action, WorkshopAction::Redo); }
+                        }
+                        if builder_icon_button(ui, BuilderGlyph::Play,
+                            if wide { "TESTER" } else { "Test" },
+                            false, if wide { 106.0 } else { 65.0 },
+                        ).clicked() {
+                            enqueue(&mut action, WorkshopAction::SetMode(WorkshopMode::Drive));
+                        }
+                        if builder_icon_button(ui, BuilderGlyph::Save,
+                            if wide { "Sauvegarder" } else { "Sauver" },
+                            false, if wide { 130.0 } else { 79.0 },
+                        ).clicked() {
+                            if view.file.is_some() {
+                                enqueue(&mut action, WorkshopAction::Save);
+                            } else if files.iter().any(|name|
+                                same_scene_file(name, &controls.scene_name)) {
+                                draft.confirmation = Some(Confirmation::SaveAs(controls.scene_name.clone()));
+                            } else {
+                                enqueue(&mut action, WorkshopAction::SaveAs(controls.scene_name.clone()));
+                            }
+                        }
+                        ui.menu_button("⋯", |ui| {
+                            if ui.button("Diagnostics").clicked() {
+                                draft.tab = WorkshopTab::Diagnostic;
+                                ui.close();
+                            }
+                            ui.separator();
+                            ui.label("Affichage");
+                            for (dock, label) in [
+                                (EditorDock::Auto, "Automatique"),
+                                (EditorDock::Right, "Atelier complet"),
+                                (EditorDock::Bottom, "Atelier compact"),
+                            ] {
+                                if ui.selectable_value(&mut draft.dock, dock, label).clicked() {
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            ui.checkbox(&mut controls.legacy_pan_direction, "Panoramique historique");
+                            if ui.button("Masquer l'éditeur [T]").clicked() {
+                                open = false;
+                                ui.close();
+                            }
+                        });
+                    });
                 });
-        });
+        }).response.rect);
+
+    if wide {
+        bounds[1] = Some(egui::Panel::left("motor_trail_builder_tools")
+            .resizable(false)
+            .default_size(110.0)
+            .show(&mut root, |ui| {
+                ui.visuals_mut().panel_fill = background;
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.small(egui::RichText::new("OUTILS").color(active));
+                            ui.separator();
+                            for (tab, glyph, label) in [
+                                (WorkshopTab::Generation, BuilderGlyph::Terrain, "Terrain"),
+                                (WorkshopTab::Sculpture, BuilderGlyph::Sculpt, "Sculpter"),
+                                (WorkshopTab::Objects, BuilderGlyph::Objects, "Objets"),
+                                (WorkshopTab::Scenes, BuilderGlyph::Scenes, "Scènes"),
+                            ] {
+                                if builder_icon_button(
+                                    ui, glyph, label, draft.tab == tab, 92.0,
+                                ).clicked() {
+                                    draft.tab = tab;
+                                    if tab == WorkshopTab::Objects {
+                                        controls.tool = EditorTool::Select;
+                                    } else if tab == WorkshopTab::Sculpture {
+                                        controls.tool = EditorTool::Sculpt;
+                                    }
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Masquer [T]").clicked() { open = false; }
+                        });
+                    });
+            }).response.rect);
+        bounds[2] = Some(egui::Panel::right("motor_trail_builder_inspector")
+            .resizable(true)
+            .default_size(328.0)
+            .min_size(280.0)
+            .max_size((screen.width() * 0.34).min(440.0))
+            .show(&mut root, |ui| {
+                ui.visuals_mut().panel_fill = background;
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(12))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.heading(egui::RichText::new(match draft.tab {
+                                WorkshopTab::Generation => "Générer le terrain",
+                                WorkshopTab::Sculpture => "Sculpter",
+                                WorkshopTab::Objects => "Sélection et propriétés",
+                                WorkshopTab::Scenes => "Gestion des scènes",
+                                WorkshopTab::Diagnostic => "Diagnostics",
+                            }).color(egui::Color32::WHITE));
+                        });
+                        if !status.is_empty() { ui.small(&status); }
+                        if let Some(error) = &error {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        }
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .id_salt(("builder_inspector", draft.tab as u8))
+                            .auto_shrink([false,false])
+                            .show(ui, |ui| {
+                                match draft.tab {
+                                    WorkshopTab::Generation =>
+                                        generation(ui, &mut controls, &mut draft),
+                                    WorkshopTab::Sculpture =>
+                                        sculpture(ui, &mut controls),
+                                    WorkshopTab::Objects =>
+                                        objects(ui, &mut controls, view.obstacles, view.groups,
+                                            view.compositions, view.spawn, &mut draft, &mut action, false),
+                                    WorkshopTab::Scenes => {
+                                        scene_files(ui, &mut controls, &files, view.file, &mut draft, &mut action);
+                                        egui::CollapsingHeader::new("Avancé : départ du véhicule")
+                                            .default_open(false)
+                                            .show(ui, |ui| spawn_controls(
+                                                ui, &controls, &mut draft, view.ground_height, &mut action,
+                                            ));
+                                    }
+                                    WorkshopTab::Diagnostic =>
+                                        diagnostics(ui, view),
+                                }
+                                if draft.confirmation.is_some() {
+                                    ui.separator();
+                                    confirmation_controls(ui, &mut draft, &mut action);
+                                }
+                            });
+                    });
+            }).response.rect);
+        if draft.tab == WorkshopTab::Objects {
+        bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_asset_shelf")
+            .resizable(true)
+            .default_size(254.0)
+            .min_size(builder_shelf_min_height(screen.height()))
+            .max_size((screen.height() * 0.48).max(250.0))
+            .show(&mut root, |ui| {
+                ui.visuals_mut().panel_fill = background;
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(9))
+                    .show(ui, |ui| {
+                        if draft.tab == WorkshopTab::Objects {
+                            // Put critical controls ABOVE the thumbnail scroll.
+                            // Even at the smallest allowed height they remain
+                            // reachable; thumbnails can scroll independently.
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(egui::RichText::new("PLACER").strong().color(active));
+                                ui.selectable_value(&mut controls.placement_mode,
+                                    PlacementMode::Single, "1 objet");
+                                ui.selectable_value(&mut controls.placement_mode,
+                                    PlacementMode::Multiple, "En série");
+                                ui.small("Q/E : orienter · Échap : terminer");
+                            });
+                            ui.separator();
+                            if let Some(kind) = super::terrain_catalogue::catalogue_strip(
+                                ui, controls.object_kind, &mut draft.asset_query,
+                                &mut draft.asset_category,
+                            ) {
+                                controls.choose_kind(kind);
+                            }
+                        } else {
+                            ui.strong("MOTOR TRAIL  •  ATELIER");
+                            ui.separator();
+                            ui.label("Sélectionnez « Objets » pour afficher la bibliothèque d'assets.");
+                        }
+                    });
+            }).response.rect);
+        }
+    } else {
+        // Responsive fallback: a single compact dock keeps the central scene
+        // visible on 360px windows without forcing three cramped columns.
+        bounds[3] = Some(egui::Panel::bottom("motor_trail_builder_compact")
+            .resizable(true)
+            .default_size((screen.height() * 0.45).clamp(190.0, 420.0))
+            .min_size(125.0)
+            .max_size((screen.height() * 0.72).max(180.0))
+            .show(&mut root, |ui| {
+                egui::Frame::new().fill(background)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (tab, label) in [
+                                (WorkshopTab::Generation, "Terrain"),
+                                (WorkshopTab::Sculpture, "Sculpter"),
+                                (WorkshopTab::Objects, "Objets"),
+                                (WorkshopTab::Scenes, "Scènes"),
+                            ] {
+                                if ui.selectable_label(draft.tab == tab, label).clicked() {
+                                    draft.tab = tab;
+                                    if tab == WorkshopTab::Objects {
+                                        controls.tool = EditorTool::Select;
+                                    } else if tab == WorkshopTab::Sculpture {
+                                        controls.tool = EditorTool::Sculpt;
+                                    }
+                                }
+                            }
+                            if ui.small_button("Masquer [T]").clicked() { open = false; }
+                        });
+                        egui::ScrollArea::vertical()
+                            .id_salt(("builder_compact", draft.tab as u8))
+                            .show(ui, |ui| {
+                                match draft.tab {
+                                    WorkshopTab::Generation => generation(ui, &mut controls, &mut draft),
+                                    WorkshopTab::Sculpture => sculpture(ui, &mut controls),
+                                    WorkshopTab::Objects => objects(
+                                        ui, &mut controls, view.obstacles, view.groups,
+                                        view.compositions, view.spawn, &mut draft, &mut action, true,
+                                    ),
+                                    WorkshopTab::Scenes => {
+                                        scene_files(ui, &mut controls, &files, view.file, &mut draft, &mut action);
+                                        egui::CollapsingHeader::new("Avancé : départ du véhicule")
+                                            .default_open(false)
+                                            .show(ui, |ui| spawn_controls(
+                                                ui, &controls, &mut draft, view.ground_height, &mut action,
+                                            ));
+                                    }
+                                    WorkshopTab::Diagnostic => diagnostics(ui, view),
+                                }
+                                if draft.confirmation.is_some() {
+                                    ui.separator();
+                                    confirmation_controls(ui, &mut draft, &mut action);
+                                }
+                            });
+                    });
+            }).response.rect);
+    }
+
+    // The layout uses Background-layer panels. Their exact surfaces are passed
+    // to PreUpdate capture so dragging sliders/scrollbars cannot sculpt or pan
+    // the world underneath, even when the mouse leaves a button.
+    local.bounds = bounds;
     controls.open = open;
     local.commit(ctx, state, &mut controls, &mut draft, action);
-    result.map(|result| result.response.rect)
+    if wide { bounds[2] } else { bounds[3] }
+}
+
+/// Small vector icons painted into egui buttons; no icon font or external
+/// texture dependency, so the same glyphs ship in native builds.
+#[derive(Clone, Copy)]
+enum BuilderGlyph {
+    Terrain, Sculpt, Objects, Scenes, Save, Play, Edit,
+    Copy, Trash, Ground,
+}
+
+fn builder_icon_button(
+    ui: &mut egui::Ui, glyph: BuilderGlyph, label: &str,
+    selected: bool, width: f32,
+) -> egui::Response {
+    let response = ui.add_sized(
+        [width, 36.0],
+        egui::Button::new(format!("    {label}")).selected(selected),
+    );
+    let painter = ui.painter_at(response.rect);
+    let center = egui::pos2(response.rect.left() + 17.0, response.rect.center().y);
+    let color = if selected {
+        egui::Color32::from_rgb(57, 223, 146)
+    } else {
+        egui::Color32::from_rgb(205, 223, 217)
+    };
+    let stroke = egui::Stroke::new(1.7, color);
+    let point = |x: f32, y: f32| center + egui::vec2(x, y);
+    match glyph {
+        BuilderGlyph::Terrain => {
+            painter.line(vec![point(-9.0, 7.0), point(-3.0, -5.0),
+                point(0.0, -1.0), point(4.0, -9.0), point(10.0, 7.0)], stroke);
+            painter.line_segment([point(-9.0, 7.0), point(10.0, 7.0)], stroke);
+        }
+        BuilderGlyph::Sculpt => {
+            painter.line_segment([point(-8.0, 8.0), point(5.0, -7.0)], stroke);
+            painter.line_segment([point(-5.0, 9.0), point(8.0, -5.0)], stroke);
+            painter.circle_stroke(point(7.0, -7.0), 2.5, stroke);
+        }
+        BuilderGlyph::Objects => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(15.0, 14.0)),
+                2.0, stroke, egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-7.0, -6.0), point(0.0, 0.0)], stroke);
+            painter.line_segment([point(7.0, -6.0), point(0.0, 0.0)], stroke);
+            painter.line_segment([point(0.0, 0.0), point(0.0, 7.0)], stroke);
+        }
+        BuilderGlyph::Scenes => {
+            for y in [-6.0, 0.0, 6.0] {
+                painter.circle_filled(point(-7.0, y), 1.8, color);
+                painter.line_segment([point(-3.0, y), point(9.0, y)], stroke);
+            }
+        }
+        BuilderGlyph::Save => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(16.0, 17.0)),
+                2.0, stroke, egui::StrokeKind::Inside,
+            );
+            painter.line_segment([point(-4.0, -7.0), point(5.0, -7.0)], stroke);
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-5.0, 0.0), point(5.0, 7.0)),
+                1.0, stroke, egui::StrokeKind::Inside,
+            );
+        }
+        BuilderGlyph::Play => {
+            painter.add(egui::Shape::convex_polygon(
+                vec![point(-5.0, -8.0), point(8.0, 0.0), point(-5.0, 8.0)],
+                color, egui::Stroke::NONE,
+            ));
+        }
+        BuilderGlyph::Edit => {
+            painter.line_segment([point(-8.0, 7.0), point(6.0, -7.0)], stroke);
+            painter.line(vec![point(-9.0, 9.0), point(-2.0, 7.0), point(-7.0, 2.0)], stroke);
+        }
+        BuilderGlyph::Copy => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-8.0, -8.0), point(4.0, 4.0)),
+                1.0, stroke, egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_min_max(point(-4.0, -4.0), point(8.0, 8.0)),
+                1.0, stroke, egui::StrokeKind::Inside,
+            );
+        }
+        BuilderGlyph::Trash => {
+            painter.line_segment([point(-8.0, -6.0), point(8.0, -6.0)], stroke);
+            painter.line_segment([point(-3.0, -9.0), point(3.0, -9.0)], stroke);
+            painter.line(vec![point(-6.0, -4.0), point(-5.0, 8.0),
+                point(5.0, 8.0), point(6.0, -4.0)], stroke);
+        }
+        BuilderGlyph::Ground => {
+            painter.line_segment([point(-9.0, 7.0), point(9.0, 7.0)], stroke);
+            painter.line_segment([point(0.0, -8.0), point(0.0, 3.0)], stroke);
+            painter.line(vec![point(-4.0, 0.0), point(0.0, 4.0), point(4.0, 0.0)], stroke);
+        }
+    }
+    response
+}
+
+/// The complete shelf contains a placement row, search/categories and a
+/// 121-point thumbnail strip. Never offer a resize height that clips the row.
+fn builder_shelf_min_height(viewport_height: f32) -> f32 {
+    // Placement actions + search/categories + 121px thumbnails + panel
+    // padding; never permit the user to shrink beneath this usable height.
+    (viewport_height * 0.32).clamp(225.0, 250.0)
 }
 
 fn toolbar(
@@ -478,7 +868,7 @@ fn toolbar(
     ui.horizontal_wrapped(|ui| -> [egui::Response; 2] {
         for (mode, label) in [
             (WorkshopMode::Edit, "Edition"),
-            (WorkshopMode::Drive, "Conduite"),
+            (WorkshopMode::Drive, "▶ Tester"),
         ] {
             if ui.selectable_label(controls.mode == mode, label).clicked() && controls.mode != mode
             {
@@ -863,13 +1253,17 @@ fn sculpture(ui: &mut egui::Ui, controls: &mut Controls) {
         0.01..=20.0,
         true,
     );
-    slider_control(
-        ui,
-        "Exposant de retombee",
-        &mut controls.brush.falloff,
-        0.1..=4.0,
-        false,
-    );
+    egui::CollapsingHeader::new("Avance : forme du pinceau")
+        .default_open(false)
+        .show(ui, |ui| {
+            slider_control(
+                ui,
+                "Exposant de retombee",
+                &mut controls.brush.falloff,
+                0.1..=4.0,
+                false,
+            );
+        });
     if controls.brush.kind == BrushKind::Flatten {
         float_control(
             ui,
@@ -935,189 +1329,232 @@ fn objects(
     spawn: &VehicleSpawn,
     draft: &mut UiDraft,
     action: &mut Option<WorkshopAction>,
+    show_gallery: bool,
 ) {
+    ui.heading("Objets");
     ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut controls.tool, EditorTool::Place, "Placer");
         ui.selectable_value(&mut controls.tool, EditorTool::Select, "Selectionner");
+        ui.selectable_value(&mut controls.tool, EditorTool::Place, "Placer");
     });
-    if let Some(kind) = super::terrain_catalogue::catalogue(
-        ui, controls.object_kind, &mut draft.asset_query, &mut draft.asset_category,
-    ) {
-        controls.choose_kind(kind);
-    }
     ui.horizontal_wrapped(|ui| {
-        ui.label("Placement");
-        ui.selectable_value(&mut controls.placement_mode, PlacementMode::Single, "Unique");
-        ui.selectable_value(&mut controls.placement_mode, PlacementMode::Multiple, "Multiple");
-    });
-    ui.small("Choisissez un modele puis cliquez sur le terrain. Q/E tourne ; Echap annule.");
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut controls.placement_follow_ground, "Suivre le sol");
-        if !controls.placement_follow_ground {
-            ui.label("Libre : le modele peut traverser le sol");
+        ui.label("Gizmos");
+        for (mode, label) in [
+            (GizmoMode::Move, "G · Deplacer"),
+            (GizmoMode::Rotate, "R · Tourner"),
+            (GizmoMode::Scale, "S · Taille"),
+        ] {
+            if ui.selectable_label(controls.gizmo_mode == mode, label).clicked() {
+                controls.gizmo_mode = mode;
+                controls.tool = EditorTool::Select;
+            }
         }
     });
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Decalage vertical [m]");
-        ui.add(egui::DragValue::new(&mut controls.placement_offset_y)
-            .speed(0.1).range(-32.0..=32.0));
-    });
-    ui.separator();
-    ui.heading("Manipulation 3D de la selection");
-    ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Move, "G · Deplacer");
-        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Rotate, "R · Tourner");
-        ui.selectable_value(&mut controls.gizmo_mode, GizmoMode::Scale, "S · Taille");
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.checkbox(&mut controls.snap_enabled, "Aimantation");
-        if controls.snap_enabled {
-            ui.checkbox(&mut controls.snap_objects, "Autres objets");
-        }
-        ui.checkbox(&mut controls.uniform_scale, "Taille uniforme");
-    });
-    if controls.snap_enabled {
+    let number = controls.selected_ids.len();
+    if number > 0 {
+        ui.strong(format!("{number} objet(s) selectionne(s)"));
         ui.horizontal_wrapped(|ui| {
-            ui.label("Pas grille [m]");
-            ui.add(egui::DragValue::new(&mut controls.snap_grid)
-                .speed(0.05).range(0.05..=5.0));
-            ui.label("Angle [°]");
-            ui.add(egui::DragValue::new(&mut controls.snap_angle)
-                .speed(1.0).range(1.0..=90.0));
-        });
-    }
-    ui.small("Sur une selection : G/R/S, glisser une poignee coloree, Shift = mouvement fin, Alt = aimantation temporairement desactivee, Echap = annuler.");
-    ui.separator();
-    vector_control(
-        ui,
-        "Dimensions de placement [m]",
-        &mut controls.object_size,
-        " m",
-    );
-    if !valid_size(controls.object_size) {
-        ui.colored_label(ui.visuals().error_fg_color, "Dimensions : 0.1 a 32 m");
-    }
-    let yaw = controls
-        .placement_yaws
-        .iter()
-        .find(|(kind, _)| *kind == controls.object_kind)
-        .map_or(0.0, |(_, yaw)| *yaw);
-    ui.label(format!("Lacet de placement : {yaw:.0} deg"));
-    ui.separator();
-    ui.strong(format!("Objets ({}) · {} selectionne(s)", obstacles.len(), controls.selected_ids.len()));
-    ui.horizontal_wrapped(|ui| {
-        if ui.button("Tout selectionner").clicked() {
-            controls.selected_ids = obstacles.iter().map(|o| o.id).collect();
-            controls.selected = controls.selected_ids.last().copied();
-            controls.tool = EditorTool::Select;
-        }
-        if ui.button("Deselectionner").clicked() {
-            controls.selected_ids.clear();
-            controls.selected = None;
-        }
-    });
-    egui::ScrollArea::vertical()
-        .id_salt("terrain_objects")
-        .max_height(170.0)
-        .show(ui, |ui| {
-            for object in obstacles {
-                let group = groups.iter().find(|g| g.members.contains(&object.id));
-                let label = match group {
-                    Some(g) => format!("#{} {} · {}", object.id, object.kind.name(), g.name),
-                    None => format!("#{} {}", object.id, object.kind.name()),
-                };
-                if ui.selectable_label(controls.selected_ids.contains(&object.id), label)
-                    .on_hover_text("Maj + clic : ajouter ou retirer de la selection")
-                    .clicked() {
-                    let members = expanded_selection(object.id, groups);
-                    let shift = ui.input(|i| i.modifiers.shift);
-                    if shift {
-                        let remove = members.iter().all(|id| controls.selected_ids.contains(id));
-                        if remove {
-                            controls.selected_ids.retain(|id| !members.contains(id));
-                        } else {
-                            for id in members {
-                                if !controls.selected_ids.contains(&id) {
-                                    controls.selected_ids.push(id);
-                                }
-                            }
-                        }
-                    } else {
-                        controls.selected_ids = members;
-                    }
-                    controls.selected = controls.selected_ids.last().copied();
-                    controls.tool = EditorTool::Select;
-                    if controls.selected_ids.len() == 1 {
-                        draft.object = Some(object.clone());
-                        draft.object_baseline = Some(object.clone());
-                    } else {
-                        draft.object = None;
-                        draft.object_baseline = None;
-                    }
+            if builder_icon_button(ui, BuilderGlyph::Copy, "Dupliquer", false, 130.0).clicked() {
+                enqueue(action, WorkshopAction::DuplicateSelection);
+            }
+            if builder_icon_button(ui, BuilderGlyph::Trash, "Supprimer", false, 132.0).clicked() {
+                enqueue(action, WorkshopAction::DeleteSelection);
+            }
+            if number == 1 && builder_icon_button(
+                ui, BuilderGlyph::Ground, "Au sol", false, 118.0,
+            ).clicked() {
+                if let Some(id) = controls.selected {
+                    enqueue(action, WorkshopAction::AlignObject(id));
                 }
             }
         });
-    ui.separator();
-    let number = controls.selected_ids.len();
-    if number > 1 {
-        ui.strong(format!("Ensemble de {number} objets"));
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Nom");
-            ui.add(egui::TextEdit::singleline(&mut draft.group_name)
-                .hint_text("Passage rocheux").desired_width(180.0));
-        });
-        let grouped = groups.iter().any(|g|
-            g.members.iter().any(|id| controls.selected_ids.contains(id)));
-        ui.horizontal_wrapped(|ui| {
-            if ui.add_enabled(!grouped && !draft.group_name.trim().is_empty(),
-                    egui::Button::new("Grouper")).clicked() {
-                enqueue(action, WorkshopAction::GroupSelection(draft.group_name.trim().to_owned()));
+        ui.small("Maj + clic : ajouter / retirer. Glisser une poignee X/Y/Z pour transformer.");
+        if number == 1 {
+            if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
+                egui::CollapsingHeader::new("Transformations · X / Y / Z")
+                    .default_open(!show_gallery)
+                    .show(ui, |ui| object_transform(ui, object, baseline, action));
             }
-            if ui.add_enabled(grouped, egui::Button::new("Degrouper")).clicked() {
-                enqueue(action, WorkshopAction::UngroupSelection);
-            }
-            if ui.button("Dupliquer l'ensemble").clicked() {
-                enqueue(action, WorkshopAction::DuplicateSelection);
-            }
-            if ui.button("Supprimer l'ensemble").clicked() {
-                enqueue(action, WorkshopAction::DeleteSelection);
-            }
-        });
-        ui.small("Les gizmos G/R/S agissent sur tout l'ensemble autour de son centre, sans fusionner les meshes.");
-    } else if let (Some(object), Some(baseline)) = (&mut draft.object, &draft.object_baseline) {
-        object_transform(ui, object, baseline, action);
+        } else {
+            ui.small("Les gizmos deplacent et tournent l'ensemble autour de son centre.");
+        }
+    } else {
+        ui.small("Choisissez un objet dans le terrain, dans la liste ou dans le catalogue.");
     }
     ui.separator();
-    ui.heading("Mes compositions");
-    ui.small("Construisez un ensemble, puis sauvegardez-le pour le reposer sur une autre map.");
-    ui.horizontal_wrapped(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut draft.composition_name)
-            .hint_text("Bivouac forestier").desired_width(180.0));
-        if ui.add_enabled((2..=64).contains(&number) && !draft.composition_name.trim().is_empty(),
-                egui::Button::new("Enregistrer la composition")).clicked() {
-            enqueue(action, WorkshopAction::SaveComposition(draft.composition_name.trim().to_owned()));
-        }
-        if ui.button("Actualiser").clicked() {
-            enqueue(action, WorkshopAction::RefreshCompositions);
-        }
-    });
-    for name in compositions {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(name);
-            if ui.button(format!("Inserer##{name}"))
-                .on_hover_text("Placer l'assemblage pres du curseur ; sinon au depart du joueur")
-                .clicked() {
-                let origin = controls.cursor.unwrap_or(Vec3::from_array(spawn.position));
-                enqueue(action, WorkshopAction::InsertComposition(name.clone(), origin.to_array()));
+
+    egui::CollapsingHeader::new(format!("Objets places ({})", obstacles.len()))
+        .id_salt("placed_objects_docked")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Tout selectionner").clicked() {
+                    controls.selected_ids = obstacles.iter().map(|o| o.id).collect();
+                    controls.selected = controls.selected_ids.last().copied();
+                    controls.tool = EditorTool::Select;
+                }
+                if ui.button("Deselectionner").clicked() {
+                    controls.selected_ids.clear();
+                    controls.selected = None;
+                }
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("terrain_objects")
+                .max_height(190.0)
+                .show(ui, |ui| {
+                    for object in obstacles {
+                        let group = groups.iter().find(|g| g.members.contains(&object.id));
+                        let label = match group {
+                            Some(g) => format!("#{} {} · {}", object.id, object.kind.name(), g.name),
+                            None => format!("#{} {}", object.id, object.kind.name()),
+                        };
+                        if ui.selectable_label(controls.selected_ids.contains(&object.id), label)
+                            .on_hover_text("Maj + clic pour modifier la selection")
+                            .clicked() {
+                            let members = expanded_selection(object.id, groups);
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            if shift {
+                                let remove = members.iter().all(|id| controls.selected_ids.contains(id));
+                                if remove {
+                                    controls.selected_ids.retain(|id| !members.contains(id));
+                                } else {
+                                    for id in members {
+                                        if !controls.selected_ids.contains(&id) {
+                                            controls.selected_ids.push(id);
+                                        }
+                                    }
+                                }
+                            } else {
+                                controls.selected_ids = members;
+                            }
+                            controls.selected = controls.selected_ids.last().copied();
+                            controls.tool = EditorTool::Select;
+                            if controls.selected_ids.len() == 1 {
+                                draft.object = Some(object.clone());
+                                draft.object_baseline = Some(object.clone());
+                            } else {
+                                draft.object = None;
+                                draft.object_baseline = None;
+                            }
+                        }
+                    }
+                });
+        });
+
+    if show_gallery {
+    egui::CollapsingHeader::new("Ajouter un asset")
+        .id_salt("add_asset_docked")
+        .default_open(true)
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("asset_gallery_docked")
+                .max_height(235.0)
+                .show(ui, |ui| {
+                    if let Some(kind) = super::terrain_catalogue::catalogue(
+                        ui, controls.object_kind, &mut draft.asset_query, &mut draft.asset_category,
+                    ) {
+                        controls.choose_kind(kind);
+                    }
+                });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Placement");
+                ui.selectable_value(&mut controls.placement_mode, PlacementMode::Single, "Unique");
+                ui.selectable_value(&mut controls.placement_mode, PlacementMode::Multiple, "Multiple");
+            });
+            ui.small("Choisir un asset, cliquer sur le terrain · Q/E : tourner · Echap : quitter.");
+            egui::CollapsingHeader::new("Options avancees de placement")
+                .id_salt("advanced_placement_docked")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.checkbox(&mut controls.placement_follow_ground, "Suivre le terrain");
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Decalage vertical [m]");
+                        ui.add(egui::DragValue::new(&mut controls.placement_offset_y)
+                            .speed(0.1).range(-32.0..=32.0));
+                    });
+                    vector_control(ui, "Dimensions de placement [m]", &mut controls.object_size, " m");
+                    if !valid_size(controls.object_size) {
+                        ui.colored_label(ui.visuals().error_fg_color, "Dimensions : 0.1 a 32 m");
+                    }
+                    let yaw = controls.placement_yaws.iter()
+                        .find(|(kind, _)| *kind == controls.object_kind)
+                        .map_or(0.0, |(_, yaw)| *yaw);
+                    ui.label(format!("Angle de pose : {yaw:.0}°"));
+                });
+        });
+
+    }
+    egui::CollapsingHeader::new("Reglages avances des gizmos")
+        .id_salt("advanced_gizmo_docked")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.checkbox(&mut controls.snap_enabled, "Activer le magnetisme");
+            ui.checkbox(&mut controls.uniform_scale, "Redimensionnement uniforme");
+            if controls.snap_enabled {
+                ui.checkbox(&mut controls.snap_objects, "Aligner sur les autres objets");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Grille [m]");
+                    ui.add(egui::DragValue::new(&mut controls.snap_grid)
+                        .speed(0.05).range(0.05..=5.0));
+                    ui.label("Angle [°]");
+                    ui.add(egui::DragValue::new(&mut controls.snap_angle)
+                        .speed(1.0).range(1.0..=90.0));
+                });
+            }
+            ui.small("Maj : mouvement fin · Alt : desactiver l'aimantation temporairement · Echap : annuler.");
+        });
+    ui.separator();
+
+    egui::CollapsingHeader::new("Groupes et compositions")
+        .id_salt("compositions_docked")
+        .default_open(false)
+        .show(ui, |ui| {
+            if number > 1 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Nom du groupe");
+                    ui.add(egui::TextEdit::singleline(&mut draft.group_name)
+                        .hint_text("Passage rocheux").desired_width(155.0));
+                });
+                let grouped = groups.iter().any(|g|
+                    g.members.iter().any(|id| controls.selected_ids.contains(id)));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(!grouped && !draft.group_name.trim().is_empty(),
+                            egui::Button::new("Grouper")).clicked() {
+                        enqueue(action, WorkshopAction::GroupSelection(draft.group_name.trim().to_owned()));
+                    }
+                    if ui.add_enabled(grouped, egui::Button::new("Degrouper")).clicked() {
+                        enqueue(action, WorkshopAction::UngroupSelection);
+                    }
+                });
+            }
+            ui.strong("Mes compositions");
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut draft.composition_name)
+                    .hint_text("Bivouac").desired_width(148.0));
+                if ui.add_enabled((2..=64).contains(&number) && !draft.composition_name.trim().is_empty(),
+                    egui::Button::new("Enregistrer")).clicked() {
+                    enqueue(action, WorkshopAction::SaveComposition(draft.composition_name.trim().to_owned()));
+                }
+                if ui.small_button("↻").on_hover_text("Actualiser les compositions").clicked() {
+                    enqueue(action, WorkshopAction::RefreshCompositions);
+                }
+            });
+            for name in compositions {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(name);
+                    if ui.button(format!("Inserer##{name}"))
+                        .on_hover_text("Inserer au curseur ou pres du depart")
+                        .clicked() {
+                        let origin = controls.cursor.unwrap_or(Vec3::from_array(spawn.position));
+                        enqueue(action, WorkshopAction::InsertComposition(name.clone(), origin.to_array()));
+                    }
+                });
+            }
+            if compositions.is_empty() {
+                ui.small("Selectionnez au moins deux objets puis enregistrez une composition.");
             }
         });
-    }
-    if compositions.is_empty() {
-        ui.small("Aucune composition. Selectionnez au moins deux objets pour commencer.");
-    }
     cursor_label(ui, controls.cursor);
 }
-
 fn object_transform(
     ui: &mut egui::Ui,
     object: &mut Obstacle,
@@ -1909,12 +2346,32 @@ mod tests {
     }
 
     #[test]
+    fn responsive_dock_defaults_to_side_and_allows_explicit_bottom() {
+        assert!(EditorDock::Auto.is_right(1440.0));
+        assert!(!EditorDock::Auto.is_right(720.0));
+        assert!(!EditorDock::Right.is_right(360.0));
+        assert!(EditorDock::Right.is_right(900.0));
+        assert!(!EditorDock::Bottom.is_right(2560.0));
+    }
+
+    #[test]
+    fn resized_shelf_never_allows_height_below_its_controls() {
+        for viewport in [480.0, 600.0, 740.0, 900.0, 1440.0] {
+            let minimum = builder_shelf_min_height(viewport);
+            assert!(minimum >= 225.0);
+            assert!(minimum <= 250.0);
+            assert!(minimum <= (viewport * 0.48).max(250.0));
+        }
+    }
+
+    #[test]
     fn all_tabs_render_at_desktop_and_narrow_sizes_without_mutating_live_values() {
         for size in [egui::vec2(1440.0, 900.0), egui::vec2(360.0, 740.0)] {
             for tab in WorkshopTab::ALL {
                 let ctx = egui::Context::default();
                 let mut state = TerrainWorkshopState::default();
                 state.open = true;
+                state.mode = WorkshopMode::Edit;
                 state.draft.seed = u64::MAX - 9;
                 let expected = state.draft.clone();
                 let spawn = VehicleSpawn {
@@ -1954,17 +2411,61 @@ mod tests {
                         ui.ctx().request_discard("Test responsive terrain tabs");
                     }
                 });
-                if tab == WorkshopTab::Diagnostic {
-                    text_position(&output, "Terrain headless");
-                    text_position(&output, "913");
-                    text_position(&output, "0.5 m/cellule");
-                    text_position(&output, "X 8.0000 m | Z 8.0000 m");
-                }
+                // A compact bottom dock intentionally scrolls long diagnostics.
+                // Check the visible header, not offscreen rows; the diagnostics
+                // themselves are independently tested at full available height.
+                let diagnostic_visible = output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape,
+                        egui::epaint::Shape::Text(text) if text.galley.text() == "Terrain headless"
+                    )
+                });
                 discard_output(output);
+                if tab == WorkshopTab::Diagnostic {
+                    assert!(diagnostic_visible, "diagnostic tab should show its title");
+                }
                 assert!(passes >= 2);
-                assert!(rect.is_some());
+                // The four-panel builder returns the inspector rect, not
+                // the former single dock. In driving mode only the thin top
+                // status bar remains; here the scene is in creation mode.
+                let panel = if size.x >= 1000.0 {
+                    local.bounds[2].expect("wide inspector must remain visible")
+                } else {
+                    local.bounds[3].expect("compact bottom dock must remain visible")
+                };
+                assert!(panel.is_finite());
+                assert!(local.bounds[0].is_some(), "command bar must be visible");
+                if size.x >= 1000.0 {
+                    assert!(panel.width() < size.x * 0.6, "inspector must leave the terrain visible: {panel:?}");
+                    assert!(panel.right() >= size.x - 8.0, "inspector must stay on right: {panel:?}");
+                    assert_eq!(local.bounds[3].is_some(), tab == WorkshopTab::Objects,
+                        "asset shelf should not waste terrain space outside Objects");
+                } else {
+                    assert!(panel.height() < size.y * 0.75, "compact dock should leave terrain visible: {panel:?}");
+                    assert!(panel.bottom() >= size.y - 8.0, "compact dock must remain anchored: {panel:?}");
+                }
+                // show_workshop deliberately returns the current inspector or
+                // compact dock; the top status is in bounds[0].
+                if let Some(rect) = rect { assert!(rect.is_finite()); }
                 assert_eq!(state.draft, expected);
                 assert!(state.actions.is_empty());
+
+                // Switching to drive must collapse the editor to ONE thin
+                // status bar, regardless of which creation tab was selected.
+                state.mode = WorkshopMode::Drive;
+                let drive_output = ctx.run_ui(input(vec![], size), |ui| {
+                    show_workshop(ui.ctx(), &mut state, &view, &mut local);
+                });
+                assert!(local.bounds[0].is_some(), "drive status must be visible");
+                assert!(local.bounds[1..].iter().all(Option::is_none),
+                    "drive must not display creation tools or asset shelf");
+                let drive_marked = drive_output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape,
+                        egui::epaint::Shape::Text(text)
+                            if text.galley.text().contains("MODE CONDUITE"))
+                });
+                assert!(drive_marked, "driving mode needs an explicit title");
+                assert!(state.actions.is_empty());
+                discard_output(drive_output);
             }
         }
     }
