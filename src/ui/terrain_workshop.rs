@@ -7,7 +7,7 @@ use crate::terrain::brush::{Brush, BrushKind};
 use crate::terrain::config::{TerrainConfig, TerrainPreset};
 use crate::terrain::obstacles::{Obstacle, ObstacleKind};
 use crate::terrain::runtime::{
-    ActiveTerrain, EditorTool, TerrainWorkshopState, WorkshopAction, WorkshopMode,
+    ActiveTerrain, EditorTool, PlacementMode, TerrainWorkshopState, WorkshopAction, WorkshopMode,
 };
 use crate::terrain::scene::{ReferenceScene, VehicleSpawn};
 
@@ -52,7 +52,7 @@ impl WorkshopTab {
 
 #[derive(Clone)]
 enum Confirmation {
-    Generate,
+    Generate(TerrainConfig),
     New,
     Reference(ReferenceScene),
     Load(String),
@@ -63,7 +63,7 @@ enum Confirmation {
 impl Confirmation {
     fn description(&self) -> String {
         match self {
-            Self::Generate => "Regenerer et remplacer le terrain courant ?".to_owned(),
+            Self::Generate(config) => format!("Remplacer le relief sculpte, les objets et le depart actuel ? Preset : {} · Graine : {} · Dimensions : {:.0} x {:.0} m. Enregistrer votre map avant de confirmer.", preset_name(config.preset), config.seed, config.width, config.depth),
             Self::New => "Creer une scene et remplacer le terrain courant ?".to_owned(),
             Self::Reference(reference) => format!(
                 "Charger {} et remplacer le terrain courant ?",
@@ -77,7 +77,7 @@ impl Confirmation {
 
     fn into_action(self) -> WorkshopAction {
         match self {
-            Self::Generate => WorkshopAction::Generate,
+            Self::Generate(config) => WorkshopAction::Generate(config),
             Self::New => WorkshopAction::New,
             Self::Reference(reference) => WorkshopAction::LoadReference(reference),
             Self::Load(name) => WorkshopAction::Load(name),
@@ -122,6 +122,9 @@ struct UiDraft {
     spawn: Option<SpawnDraft>,
     spawn_baseline: Option<SpawnDraft>,
     seed_widget: Option<egui::Id>,
+    asset_query: String,
+    asset_category: String,
+    quick_relief: Option<u8>,
 }
 
 /// Only editable controls are copied. Files, heightmaps and object lists stay borrowed.
@@ -134,6 +137,7 @@ struct Controls {
     tool: EditorTool,
     object_kind: ObstacleKind,
     object_size: [f32; 3],
+    placement_mode: PlacementMode,
     placement_yaws: Vec<(ObstacleKind, f32)>,
     selected: Option<u64>,
     scene_name: String,
@@ -144,9 +148,10 @@ struct Controls {
 impl Controls {
     fn choose_kind(&mut self, kind: ObstacleKind) {
         if self.object_kind != kind {
-            if let ObstacleKind::Nature(asset) = kind {
-                self.object_size = asset.default_size().to_array();
-            }
+            self.object_size = match kind {
+                ObstacleKind::Nature(asset) => asset.default_size().to_array(),
+                _ => [2.0, 2.0, 2.0],
+            };
         }
         self.object_kind = kind;
         self.tool = EditorTool::Place;
@@ -161,6 +166,7 @@ impl Controls {
             tool: state.tool,
             object_kind: state.object_kind,
             object_size: state.object_size,
+            placement_mode: state.placement_mode,
             placement_yaws: ObstacleKind::catalogue()
                 .map(|kind| (kind, state.placement_yaw_degrees(kind)))
                 .collect(),
@@ -258,6 +264,7 @@ impl WorkshopUi {
         state.tool = controls.tool;
         state.object_kind = controls.object_kind;
         state.object_size = controls.object_size;
+        state.placement_mode = controls.placement_mode;
         state.selected = controls.selected;
         state.scene_name.clone_from(&controls.scene_name);
         state.file_selection.clone_from(&controls.file_selection);
@@ -502,7 +509,100 @@ fn enqueue(slot: &mut Option<WorkshopAction>, action: WorkshopAction) {
     }
 }
 
+fn quick_config(preset: TerrainPreset, relief: u8, width: f32, depth: f32, seed: u64) -> TerrainConfig {
+    let mut config = TerrainConfig::preset(preset);
+    config.width = width;
+    config.depth = depth;
+    config.seed = seed;
+    config.amplitude =
+        (config.amplitude * (relief.min(100) as f32 / 50.0)).clamp(0.0, 256.0);
+    config
+}
+
+/// SplitMix64 yields reproducible variants without dropping high bits of a u64 seed.
+fn next_variation(seed: u64) -> u64 {
+    let mut x = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    let result = x ^ (x >> 31);
+    if result == seed { result.wrapping_add(1) } else { result }
+}
+
 fn generation(ui: &mut egui::Ui, controls: &mut Controls, draft: &mut UiDraft) {
+    ui.heading("Creation rapide");
+    ui.label("Choisissez un paysage et creez une variante en un clic.");
+    ui.horizontal_wrapped(|ui| {
+        for (preset, name) in [
+            (TerrainPreset::Flat, "Plaine"),
+            (TerrainPreset::Valley, "Vallee"),
+            (TerrainPreset::Mountain, "Montagne"),
+            (TerrainPreset::Trial, "Trial"),
+        ] {
+            if ui.selectable_label(controls.config.preset == preset, name).clicked() {
+                let current = &controls.config;
+                controls.config = quick_config(
+                    preset, draft.quick_relief.unwrap_or(50),
+                    current.width, current.depth, current.seed,
+                );
+            }
+        }
+    });
+    if controls.config.preset == TerrainPreset::Legacy {
+        ui.small("La vallee historique est figee : choisissez un autre paysage pour la generation aleatoire.");
+    }
+    let mut relief = draft.quick_relief.unwrap_or(50);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!("Intensite du relief : {relief}%"));
+        if ui.add(egui::Slider::new(&mut relief, 0..=100).show_value(false)).changed() {
+            draft.quick_relief = Some(relief);
+            if controls.config.preset != TerrainPreset::Legacy {
+                let base = TerrainConfig::preset(controls.config.preset);
+                controls.config.amplitude =
+                    (base.amplitude * (relief as f32 / 50.0)).clamp(0.0, 256.0);
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Largeur [m]");
+        ui.add(egui::DragValue::new(&mut controls.config.width).speed(1.0));
+        ui.label("Profondeur [m]");
+        ui.add(egui::DragValue::new(&mut controls.config.depth).speed(1.0));
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Graine");
+        draft.seed_widget = Some(seed_editor(ui, &mut controls.config.seed).id);
+        if ui.button("Copier").on_hover_text("Copier la graine exacte").clicked() {
+            ui.ctx().copy_text(controls.config.seed.to_string());
+        }
+        if ui.button("Autre variante").clicked() {
+            controls.config.seed = next_variation(controls.config.seed);
+        }
+    });
+    let validation = controls.config.validate();
+    if let Err(message) = &validation {
+        ui.colored_label(ui.visuals().error_fg_color, message);
+    } else {
+        let (x, z) = controls.config.cells();
+        ui.small(format!(
+            "{:.0} x {:.0} m · {} x {} cellules · {} sommets · pas effectif {:.2} x {:.2} m",
+            controls.config.width, controls.config.depth, x, z,
+            (x + 1) * (z + 1),
+            controls.config.width / x as f32, controls.config.depth / z as f32,
+        ));
+        ui.small(format!(
+            "Seed {} : le meme preset et les memes reglages reproduisent le meme terrain.",
+            controls.config.seed,
+        ));
+    }
+    if ui.add_enabled(validation.is_ok(), egui::Button::new("Generer")).clicked() {
+        draft.confirmation = Some(Confirmation::Generate(controls.config.clone()));
+    }
+    ui.small("La generation est appliquee seulement apres confirmation. Enregistrez la map actuelle pour la conserver.");
+    ui.separator();
+    egui::CollapsingHeader::new("Avance : tous les reglages du terrain")
+        .default_open(false)
+        .show(ui, |ui| {
+
     const HISTORICAL_HELP: &str = "Vallee historique : grille fixe de 120 x 165 m, pas de 1.25 m. La graine et les parametres de bruit sont ignores.";
     ui.horizontal_wrapped(|ui| {
         ui.label("Preset");
@@ -598,8 +698,10 @@ fn generation(ui: &mut egui::Ui, controls: &mut Controls, draft: &mut UiDraft) {
         .add_enabled(validation.is_ok(), egui::Button::new("Regenerer"))
         .clicked()
     {
-        draft.confirmation = Some(Confirmation::Generate);
+        draft.confirmation = Some(Confirmation::Generate(controls.config.clone()));
     }
+
+    });
 }
 
 fn preset_name(preset: TerrainPreset) -> &'static str {
@@ -795,41 +897,17 @@ fn objects(
         ui.selectable_value(&mut controls.tool, EditorTool::Place, "Placer");
         ui.selectable_value(&mut controls.tool, EditorTool::Select, "Selectionner");
     });
+    if let Some(kind) = super::terrain_catalogue::catalogue(
+        ui, controls.object_kind, &mut draft.asset_query, &mut draft.asset_category,
+    ) {
+        controls.choose_kind(kind);
+    }
     ui.horizontal_wrapped(|ui| {
-        for kind in ObstacleKind::ALL {
-            if ui
-                .selectable_value(&mut controls.object_kind, kind, kind.name())
-                .clicked()
-            {
-                controls.choose_kind(kind);
-            }
-        }
+        ui.label("Placement");
+        ui.selectable_value(&mut controls.placement_mode, PlacementMode::Single, "Unique");
+        ui.selectable_value(&mut controls.placement_mode, PlacementMode::Multiple, "Multiple");
     });
-    egui::ComboBox::from_id_salt("nature_catalogue")
-        .selected_text(match controls.object_kind {
-            ObstacleKind::Nature(asset) => asset.name(),
-            _ => "Modeles Nature",
-        })
-        .width(ui.available_width().min(260.0))
-        .show_ui(ui, |ui| {
-            let mut previous = "";
-            for asset in crate::terrain::nature::NatureAsset::ALL {
-                if asset.category() != previous {
-                    if !previous.is_empty() {
-                        ui.separator();
-                    }
-                    ui.strong(asset.category());
-                    previous = asset.category();
-                }
-                let kind = ObstacleKind::Nature(asset);
-                if ui
-                    .selectable_label(controls.object_kind == kind, asset.name())
-                    .clicked()
-                {
-                    controls.choose_kind(kind);
-                }
-            }
-        });
+    ui.small("Choisissez un modele puis cliquez sur le terrain. Q/E tourne ; Echap annule.");
     vector_control(
         ui,
         "Dimensions de placement [m]",
@@ -1151,6 +1229,42 @@ fn diagnostics(ui: &mut egui::Ui, view: &WorkshopView<'_>) {
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn quick_relief_preserves_noise_and_reproducible_seed() {
+        for preset in [TerrainPreset::Flat, TerrainPreset::Valley, TerrainPreset::Mountain, TerrainPreset::Trial] {
+            let base = TerrainConfig::preset(preset);
+            let soft = quick_config(preset, 0, 80.0, 72.0, u64::MAX - 8);
+            let normal = quick_config(preset, 50, 80.0, 72.0, u64::MAX - 8);
+            let strong = quick_config(preset, 100, 80.0, 72.0, u64::MAX - 8);
+            assert!(soft.validate().is_ok() && normal.validate().is_ok() && strong.validate().is_ok());
+            assert_eq!(soft.amplitude, 0.0);
+            assert_eq!(normal.amplitude, base.amplitude);
+            assert!(strong.amplitude >= normal.amplitude);
+            assert_eq!(normal.seed, u64::MAX - 8);
+            assert_eq!(normal.width, 80.0);
+            assert_eq!(normal.depth, 72.0);
+            assert_eq!(normal.frequency, base.frequency);
+            assert_eq!(normal.octaves, base.octaves);
+        }
+    }
+
+    #[test]
+    fn variant_is_stable_and_different_without_mutating_the_active_scene() {
+        let seed = (1u64 << 60) + 43;
+        let alternate = next_variation(seed);
+        assert_eq!(alternate, next_variation(seed));
+        assert_ne!(seed, alternate);
+        let config = quick_config(TerrainPreset::Valley, 50, 32.0, 32.0, seed);
+        let scene = crate::terrain::scene::TerrainScene::generate("Test variante", config.clone()).unwrap();
+        let exact = crate::terrain::scene::TerrainScene::generate("Test variante", config.clone()).unwrap();
+        assert_eq!(scene.terrain.heights, exact.terrain.heights);
+        let mut alternate_config = config;
+        alternate_config.seed = alternate;
+        let other = crate::terrain::scene::TerrainScene::generate("Test variante", alternate_config).unwrap();
+        assert_ne!(scene.terrain.heights, other.terrain.heights);
+        assert_eq!(scene.obstacles, Vec::new());
+    }
     #[test]
     fn nature_catalogue_choices_use_natural_sizes_and_preserve_repeated_custom_sizes() {
         let mut controls = Controls::read(&TerrainWorkshopState::default());
@@ -1422,20 +1536,20 @@ mod tests {
         let mut controls = Controls::read(&TerrainWorkshopState::default());
         let mut draft = UiDraft::default();
         controls.config.resolution = 0.0;
-        click_control(&egui::Context::default(), "Regenerer", |ui| {
+        click_control(&egui::Context::default(), "Generer", |ui| {
             generation(ui, &mut controls, &mut draft);
         });
         assert!(draft.confirmation.is_none());
         controls.config = TerrainConfig::default();
-        click_control(&egui::Context::default(), "Regenerer", |ui| {
+        click_control(&egui::Context::default(), "Generer", |ui| {
             generation(ui, &mut controls, &mut draft);
         });
-        assert!(matches!(draft.confirmation, Some(Confirmation::Generate)));
+        assert!(matches!(draft.confirmation, Some(Confirmation::Generate(_))));
         let mut action = None;
         click_control(&egui::Context::default(), "Confirmer", |ui| {
             confirmation_controls(ui, &mut draft, &mut action);
         });
-        assert!(matches!(action, Some(WorkshopAction::Generate)));
+        assert!(matches!(action, Some(WorkshopAction::Generate(_))));
     }
 
     #[test]
