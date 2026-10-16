@@ -1637,6 +1637,74 @@ mod tests {
     }
 
     #[test]
+    fn group_duplicate_delete_and_undo_preserve_atomic_membership() {
+        let mut active = ActiveTerrain::default();
+        active.scene = TerrainScene::reference(ReferenceScene::Flat).unwrap();
+        for id in [1, 2, 3] {
+            active.scene.obstacles.push(Obstacle {
+                id, kind: ObstacleKind::Cube,
+                position: [id as f32 * 3.0, 1.0, 0.0],
+                rotation_degrees: [0.0; 3],
+                size: [2.0; 3],
+            });
+        }
+        let mut state = TerrainWorkshopState::default();
+        state.mode = WorkshopMode::Edit;
+        state.selected = Some(2);
+        state.selected_ids = vec![1, 2];
+        let mut sync = TerrainSync::default();
+        let mut camera = EditorCamera::default();
+        let store = TerrainStore::new(std::env::temp_dir().join("motor-trail-nonwriting-group-test"));
+        apply_action(WorkshopAction::GroupSelection("Rochers".into()), &store,
+            &mut state, &mut active, &mut sync, &mut camera).unwrap();
+        assert_eq!(active.scene.groups.len(), 1);
+        assert_eq!(active.scene.groups[0].members, vec![1,2]);
+        assert_eq!(active.history.undo_len(), 1);
+        active.scene.validate().unwrap();
+
+        apply_action(WorkshopAction::DuplicateSelection, &store,
+            &mut state, &mut active, &mut sync, &mut camera).unwrap();
+        assert_eq!(active.scene.obstacles.len(), 5);
+        assert_eq!(active.scene.groups.len(), 2);
+        assert!(state.selected_ids.iter().all(|id| *id > 3));
+        assert_eq!(active.history.undo_len(), 2);
+
+        apply_action(WorkshopAction::DeleteSelection, &store,
+            &mut state, &mut active, &mut sync, &mut camera).unwrap();
+        assert_eq!(active.scene.obstacles.len(), 3);
+        assert_eq!(active.scene.groups.len(), 1);
+        assert_eq!(active.history.undo_len(), 3);
+        assert!(active.history.undo(&mut active.scene));
+        assert_eq!(active.scene.obstacles.len(), 5);
+        assert_eq!(active.scene.groups.len(), 2);
+        assert!(active.history.undo(&mut active.scene));
+        assert_eq!(active.scene.obstacles.len(), 3);
+        assert_eq!(active.scene.groups.len(), 1);
+        assert!(active.history.undo(&mut active.scene));
+        assert!(active.scene.groups.is_empty());
+        assert!(active.history.redo(&mut active.scene));
+        assert_eq!(active.scene.groups.len(), 1);
+        active.scene.validate().unwrap();
+    }
+
+    #[test]
+    fn group_selection_is_atomic_and_shift_toggle_never_splits_a_group() {
+        use crate::terrain::compositions::ObjectGroup;
+        let groups = vec![ObjectGroup {
+            id: 1, name: "Passage".into(), members: vec![1, 2],
+        }];
+        let mut state = TerrainWorkshopState::default();
+        state.pick_selection(Some(1), false, &groups);
+        assert_eq!(state.selection(), vec![1,2]);
+        state.pick_selection(Some(3), true, &groups);
+        assert_eq!(state.selection(), vec![1,2,3]);
+        state.pick_selection(Some(2), true, &groups);
+        assert_eq!(state.selection(), vec![3]);
+        state.pick_selection(None, false, &groups);
+        assert!(state.selection().is_empty());
+    }
+
+    #[test]
     fn workshop_saves_and_loads_use_the_injected_user_directory() {
         let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "motor-trail-user-store-{}-{}",
