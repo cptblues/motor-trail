@@ -2087,13 +2087,18 @@ mod tests {
                         ui.ctx().request_discard("Test responsive terrain tabs");
                     }
                 });
-                if tab == WorkshopTab::Diagnostic {
-                    text_position(&output, "Terrain headless");
-                    text_position(&output, "913");
-                    text_position(&output, "0.5 m/cellule");
-                    text_position(&output, "X 8.0000 m | Z 8.0000 m");
-                }
+                // A compact bottom dock intentionally scrolls long diagnostics.
+                // Check the visible header, not offscreen rows; the diagnostics
+                // themselves are independently tested at full available height.
+                let diagnostic_visible = output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape,
+                        egui::epaint::Shape::Text(text) if text.galley.text() == "Terrain headless"
+                    )
+                });
                 discard_output(output);
+                if tab == WorkshopTab::Diagnostic {
+                    assert!(diagnostic_visible, "diagnostic tab should show its title");
+                }
                 assert!(passes >= 2);
                 let rect = rect.expect("visible docked editor");
                 assert!(rect.is_finite());
