@@ -36,10 +36,27 @@ pub enum EditorTool {
     Select,
 }
 
+/// Defines whether the current asset is placed once or repeatedly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlacementMode {
+    #[default]
+    Single,
+    Multiple,
+}
+
+impl PlacementMode {
+    fn next_tool(self) -> EditorTool {
+        match self {
+            Self::Single => EditorTool::Select,
+            Self::Multiple => EditorTool::Place,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum WorkshopAction {
     SetMode(WorkshopMode),
-    Generate,
+    Generate(TerrainConfig),
     LoadReference(ReferenceScene),
     New,
     SaveAs(String),
@@ -65,6 +82,7 @@ pub struct TerrainWorkshopState {
     pub tool: EditorTool,
     pub object_kind: ObstacleKind,
     pub object_size: [f32; 3],
+    pub placement_mode: PlacementMode,
     placement_yaw_degrees: [f32; ObstacleKind::COUNT],
     pub selected: Option<u64>,
     pub scene_name: String,
@@ -86,6 +104,7 @@ impl Default for TerrainWorkshopState {
             tool: EditorTool::Sculpt,
             object_kind: ObstacleKind::Rock,
             object_size: [2.0, 1.0, 2.0],
+            placement_mode: PlacementMode::Single,
             placement_yaw_degrees: [0.0; ObstacleKind::COUNT],
             selected: None,
             scene_name: "Mon terrain".into(),
@@ -383,9 +402,12 @@ fn apply_action(
             sync.car_ready = false;
             state.cursor = None;
         }
-        WorkshopAction::Generate => {
-            let scene = TerrainScene::generate(&state.scene_name, state.draft.clone())?;
+        WorkshopAction::Generate(config) => {
+            // The accepted draft is frozen at confirmation time, not read from
+            // potentially edited UI controls a frame later.
+            let scene = TerrainScene::generate(&state.scene_name, config.clone())?;
             install_scene(scene, None, active, state, sync, camera)?;
+            state.draft = config;
             state.status = "Terrain genere".into();
             return Ok(true);
         }
@@ -672,6 +694,7 @@ fn editor_interaction(
                         state.selected = Some(id);
                         state.last_error = None;
                         preview.confirmed(active.revision);
+                        state.tool = state.placement_mode.next_tool();
                     }
                     Err(error) => {
                         preview.reject(error.clone());
